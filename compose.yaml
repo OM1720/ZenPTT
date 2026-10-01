@@ -1,0 +1,98 @@
+name: zenptt
+
+services:
+  echo-supervisor:
+    build:
+      context: ./headless
+    command: ["python", "-m", "zenptt_headless.echo_supervisor"]
+    depends_on:
+      zenptt-server:
+        condition: service_healthy
+    environment:
+      ZENPTT_SERVER_URL: ws://zenptt-server:8000/ws
+      ZENPTT_ECHO_CONTROL_URL: ws://zenptt-server:8000/internal/echo/control
+      ZENPTT_ECHO_MAX_SESSIONS: ${ZENPTT_ECHO_MAX_SESSIONS:-16}
+      ZENPTT_ECHO_LOG_LEVEL: ${ZENPTT_ECHO_LOG_LEVEL:-INFO}
+    mem_limit: ${ZENPTT_ECHO_MEMORY_LIMIT:-256m}
+    pids_limit: ${ZENPTT_ECHO_PIDS_LIMIT:-32}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
+    restart: unless-stopped
+
+  zenptt-server:
+    build:
+      context: ./server
+    env_file:
+      - ${ZENPTT_ENV_FILE:-server.local.env}
+    environment:
+      DIAGNOSTICS_DIRECTORY: /data/diagnostics
+      RELEASES_DIRECTORY: /data/releases
+    expose:
+      - "8000"
+    mem_limit: ${ZENPTT_SERVER_MEMORY_LIMIT:-768m}
+    pids_limit: ${ZENPTT_SERVER_PIDS_LIMIT:-128}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    volumes:
+      - diagnostics-data:/data/diagnostics
+      - ./server/releases:/data/releases:ro
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    depends_on:
+      zenptt-server:
+        condition: service_healthy
+    env_file:
+      - ${ZENPTT_ENV_FILE:-server.local.env}
+    ports:
+      - "${ZENPTT_HTTP_PORT:-8080}:80"
+      - "${ZENPTT_HTTPS_PORT:-8443}:443"
+    mem_limit: ${ZENPTT_CADDY_MEMORY_LIMIT:-256m}
+    pids_limit: ${ZENPTT_CADDY_PIDS_LIMIT:-64}
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./index.html:/srv/index.html:ro
+      - ./web/dist:/srv/web:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
+    restart: unless-stopped
+
+volumes:
+  diagnostics-data:
+  caddy-data:
+  caddy-config:

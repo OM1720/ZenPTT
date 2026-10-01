@@ -1,0 +1,24 @@
+{
+  "id": "/web/",
+  "name": "ZenPTT",
+  "short_name": "ZenPTT",
+  "start_url": "/web/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/web/icons/zenptt-192.png?v=2",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/web/icons/zenptt-512.png?v=2",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

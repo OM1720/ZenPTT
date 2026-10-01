@@ -1,0 +1,6 @@
+# Copy to signing.properties only when signing APKs with your own key.
+# storeFile is relative to the android directory or an absolute path.
+storeFile=path/to/your-key.jks
+storePassword=change-me
+keyAlias=your-key
+keyPassword=change-me

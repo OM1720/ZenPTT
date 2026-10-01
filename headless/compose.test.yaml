@@ -1,0 +1,46 @@
+services:
+  caddy:
+    ports: !reset []
+
+  echo-supervisor:
+    depends_on:
+      fault-proxy:
+        condition: service_started
+    environment:
+      ZENPTT_SERVER_URL: ws://fault-proxy:8080/ws
+
+  fault-proxy:
+    build:
+      context: ./headless
+    command: ["python", "/test-proxy.py"]
+    depends_on:
+      caddy:
+        condition: service_started
+    environment:
+      ZENPTT_TEST_FAULT: ${ZENPTT_TEST_FAULT:-uplink:20}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./scripts/headless-live-proxy.py:/test-proxy.py:ro
+
+  qrz-bot:
+    depends_on:
+      fault-proxy:
+        condition: service_started
+    environment:
+      ZENPTT_SERVER_URL: ws://fault-proxy:8080/ws
+      ZENPTT_TEST_HANDLER: ${ZENPTT_TEST_HANDLER:-qrz}
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        if [ "$${ZENPTT_TEST_HANDLER}" = metadata ]; then
+          exec python /tail-handler.py;
+        else
+          exec python /example/qrz_bot.py;
+        fi
+    restart: "no"
+    volumes:
+      - ./scripts/headless-tail-handler.py:/tail-handler.py:ro

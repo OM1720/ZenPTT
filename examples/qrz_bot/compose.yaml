@@ -1,0 +1,31 @@
+services:
+  qrz-bot:
+    profiles: ["qrz-bot"]
+    build:
+      context: ./headless
+    depends_on:
+      zenptt-server:
+        condition: service_healthy
+    environment:
+      ZENPTT_SERVER_URL: ${ZENPTT_BOT_SERVER_URL:-ws://caddy/ws}
+      ZENPTT_CHANNEL: ${ZENPTT_BOT_CHANNEL:-Test}
+      ZENPTT_PCM_PATH: /audio/QRZ.pcm
+      ZENPTT_LOG_LEVEL: ${ZENPTT_BOT_LOG_LEVEL:-INFO}
+    command: ["python", "/example/qrz_bot.py"]
+    mem_limit: ${ZENPTT_BOT_MEMORY_LIMIT:-128m}
+    pids_limit: ${ZENPTT_BOT_PIDS_LIMIT:-32}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=8m
+    volumes:
+      - ./examples/qrz_bot/qrz_bot.py:/example/qrz_bot.py:ro
+      - ./examples/qrz_bot/assets/QRZ.pcm:/audio/QRZ.pcm:ro
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped

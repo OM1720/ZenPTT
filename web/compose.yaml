@@ -1,0 +1,21 @@
+# Use with the root compose.yaml and project name zenptt-web.
+services:
+  caddy:
+    ports: !override
+      - "127.0.0.1:18080:80"
+  web:
+    build:
+      context: ./web
+    environment:
+      ZENPTT_DEV_PROXY: http://caddy:80
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      caddy:
+        condition: service_started
+    mem_limit: 512m
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

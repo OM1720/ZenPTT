@@ -1,0 +1,8 @@
+node_modules
+dist
+test-results
+playwright-report
+*.log
+src/generated
+public/licenses/OPUS-LICENSE.txt
+public/licenses/THIRD-PARTY-NOTICES.txt

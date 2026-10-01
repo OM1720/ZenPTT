@@ -1,0 +1,95 @@
+<!doctype html>
+<!-- Public Caddy landing page for the Android and browser clients. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZenPTT</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Roboto, "Noto Sans", Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      background: #fff;
+      color: #000;
+    }
+
+    main {
+      width: min(90vw, 24rem);
+      padding: 3rem 2rem;
+      text-align: center;
+    }
+
+    h1 {
+      margin: 0 0 1.75rem;
+      font-size: clamp(2.25rem, 10vw, 3.5rem);
+      font-weight: 500;
+      letter-spacing: -0.035em;
+    }
+
+    .download {
+      display: inline-grid;
+      width: 3.5rem;
+      height: 3.5rem;
+      place-items: center;
+      border-radius: 50%;
+      color: #000;
+      text-decoration: none;
+      transition: background-color 120ms ease, transform 120ms ease;
+    }
+
+    .download:hover {
+      background: #f2f2f2;
+    }
+
+    .download:active {
+      background: #e6e6e6;
+      transform: scale(0.96);
+    }
+
+    .download:focus-visible {
+      outline: 2px solid #000;
+      outline-offset: 3px;
+    }
+
+    .download svg {
+      width: 1.75rem;
+      height: 1.75rem;
+    }
+
+    .web-client { display: block; margin-top: 1.5rem; color: inherit; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>ZenPTT</h1>
+    <a class="download" href="/app/download" aria-label="Download ZenPTT for Android" title="Download the Android app.">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M12 15V3"></path>
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <path d="m7 10 5 5 5-5"></path>
+      </svg>
+    </a>
+    <a class="web-client" href="/web/" title="Open ZenPTT in desktop Chrome.">Open web client</a>
+  </main>
+</body>
+</html>

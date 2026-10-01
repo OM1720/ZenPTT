@@ -1,0 +1,6 @@
+# Optional Android acceptance access; the browser development server stays loopback-only.
+services:
+  caddy:
+    ports: !override
+      - "127.0.0.1:18080:80"
+      - "${ZENPTT_LAN_ADDRESS:?Set the PC LAN IPv4 address}:18080:80"

@@ -1,0 +1,51 @@
+{$ZENPTT_DOMAIN} {
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+	}
+	@nonWeb not path / /web/*
+	header @nonWeb Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
+
+	log {
+		output stdout
+		format json
+	}
+
+	@diagnostics path /diagnostics
+	request_body @diagnostics {
+		max_size {$DIAGNOSTICS_MAX_BODY_BYTES}
+	}
+
+	route {
+		@internal path /internal /internal/*
+		respond @internal 404
+		redir /web /web/ 308
+
+		handle_path /web/* {
+			root * /srv/web
+			header Content-Security-Policy "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; manifest-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+			header Cache-Control "no-cache"
+			@hashed path_regexp hashed ^/assets/[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8,}\.(js|css|wasm)$
+			header @hashed Cache-Control "public, max-age=31536000, immutable" {
+				match status 200 206 304
+			}
+			file_server
+		}
+
+		handle / {
+			root * /srv/web
+			header Content-Security-Policy "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; manifest-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+			header Cache-Control "no-cache"
+			file_server
+		}
+
+		handle {
+			reverse_proxy zenptt-server:8000 {
+				# Never trust a client-supplied forwarding chain.
+				header_up X-Forwarded-For {remote_host}
+			}
+		}
+	}
+}

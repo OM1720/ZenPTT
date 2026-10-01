@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Client — Server — Client Channel",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [1080, 680]
+  },
+  "participants": [
+    {
+      "id": "clientA",
+      "type": "frontend",
+      "label": "Client A",
+      "sublabel": "Android · sender"
+    },
+    {
+      "id": "server",
+      "type": "backend",
+      "label": "ZenPTT Server",
+      "sublabel": "WebSocket · floor and relay"
+    },
+    {
+      "id": "clientB",
+      "type": "frontend",
+      "label": "Client B",
+      "sublabel": "Android · listener"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 295,
+      "label": "Join and listener registration"
+    },
+    {
+      "from": 310,
+      "to": 610,
+      "label": "Push-to-Talk burst"
+    }
+  ],
+  "messages": [
+    {
+      "id": "joinA",
+      "from": "clientA",
+      "to": "server",
+      "y": 160,
+      "label": "join { channel }",
+      "variant": "security"
+    },
+    {
+      "id": "snapshotA",
+      "from": "server",
+      "to": "clientA",
+      "y": 190,
+      "label": "snapshot { member_id, floor }",
+      "variant": "return"
+    },
+    {
+      "id": "joinB",
+      "from": "clientB",
+      "to": "server",
+      "y": 220,
+      "label": "join { channel }",
+      "variant": "security"
+    },
+    {
+      "id": "snapshotB",
+      "from": "server",
+      "to": "clientB",
+      "y": 250,
+      "label": "snapshot { eligible_from_index }",
+      "variant": "return"
+    },
+    {
+      "id": "listenB",
+      "from": "clientB",
+      "to": "server",
+      "y": 280,
+      "label": "listen { burst_index, next_sequence }",
+      "variant": "default"
+    },
+    {
+      "id": "pttRequest",
+      "from": "clientA",
+      "to": "server",
+      "y": 325,
+      "label": "ptt_request { request_id }",
+      "variant": "emphasis"
+    },
+    {
+      "id": "pttGranted",
+      "from": "server",
+      "to": "clientA",
+      "y": 355,
+      "label": "ptt_granted { request_id, burst_id }",
+      "variant": "emphasis"
+    },
+    {
+      "id": "audioUp",
+      "from": "clientA",
+      "to": "server",
+      "y": 415,
+      "label": "v4 binary envelope · uplink Opus",
+      "variant": "default"
+    },
+    {
+      "id": "burstStarted",
+      "from": "server",
+      "to": "clientB",
+      "y": 385,
+      "label": "burst_started { burst_id }",
+      "variant": "emphasis"
+    },
+    {
+      "id": "uplinkAck",
+      "from": "server",
+      "to": "clientA",
+      "y": 445,
+      "label": "uplink_ack { next_sequence }",
+      "variant": "return"
+    },
+    {
+      "id": "audioDown",
+      "from": "server",
+      "to": "clientB",
+      "y": 475,
+      "label": "v4 binary envelope · downlink Opus",
+      "variant": "default"
+    },
+    {
+      "id": "burstEnd",
+      "from": "clientA",
+      "to": "server",
+      "y": 505,
+      "label": "burst_end { final_next_sequence }",
+      "variant": "return"
+    },
+    {
+      "id": "pttEnded",
+      "from": "server",
+      "to": "clientA",
+      "y": 545,
+      "label": "ptt_ended { state: sealed }",
+      "variant": "return"
+    },
+    {
+      "id": "burstSealed",
+      "from": "server",
+      "to": "clientB",
+      "y": 585,
+      "label": "burst_sealed { final_next_sequence }",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "server",
+      "from": 155,
+      "to": 610,
+      "type": "backend"
+    },
+    {
+      "participant": "clientA",
+      "from": 315,
+      "to": 555,
+      "type": "frontend"
+    },
+    {
+      "participant": "clientB",
+      "from": 245,
+      "to": 610,
+      "type": "frontend"
+    }
+  ]
+}

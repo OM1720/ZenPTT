@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Pinned web build, production Caddy, Chrome UI and real audio signal
+        shell: pwsh
+        run: ./scripts/test-web.ps1
+
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - run: python -m pip install -e "./server[dev]"
+      - run: python -m pytest server/tests -q --cov=server/app --cov-report=term-missing --cov-fail-under=90
+      - run: python -m ruff check server/app server/tests
+
+  headless:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Prepare host checks
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+          python -m venv .venv
+          .venv/bin/python -m pip install -e './headless[dev]'
+      - name: Unit, lint, metadata, Linux Opus and watchdog
+        shell: pwsh
+        run: ./scripts/test-headless.ps1 -WithDocker
+      - name: Live recovery, restart and ECHO isolation
+        shell: pwsh
+        run: ./scripts/test-headless-live.ps1
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: cp server.env.example server.env
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: platform-tools
+      - working-directory: android
+        run: ./gradlew --console=plain :headset:testDebugUnitTest :headset:lintDebug :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleAndroidTest
+
+  instrumentation:
+    needs: [server, android]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - run: cp server.env.example server.env
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: platform-tools
+      - name: Start server
+        run: docker compose --env-file server.local.env up -d --build
+      - name: Wait for server
+        run: |
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:8080/health && exit 0
+            sleep 1
+          done
+          docker compose --env-file server.local.env logs zenptt-server
+          exit 1
+      - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          arch: x86_64
+          script: cd android && (./gradlew --console=plain :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.serverAddress=ws://10.0.2.2:8080 || { adb logcat -d -v brief -s AndroidRuntime:E ActivityManager:E | tail -n 150; exit 1; })
+      - name: Stop instrumentation stack
+        if: always()
+        run: docker compose --env-file server.local.env down

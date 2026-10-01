@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zenptt-headless"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["websockets==16.1.1"]
+
+[project.optional-dependencies]
+dev = ["pytest==8.4.1", "pytest-asyncio==1.1.0", "ruff==0.12.4"]
+
+[project.scripts]
+zenptt-echo-supervisor = "zenptt_headless.echo_supervisor:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
