@@ -1,0 +1,2 @@
+#!/bin/sh
+exec pwsh -NoProfile -File "$(git rev-parse --show-toplevel)/scripts/check-publication.ps1" -Mode message "$1"

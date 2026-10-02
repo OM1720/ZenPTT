@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/OM1720/ZenPTT/blob/main/docs/README.md
+    about: Find setup, usage, and support guides.
+  - name: Report a security vulnerability
+    url: https://github.com/OM1720/ZenPTT/security/advisories
+    about: Send a private vulnerability report through GitHub Advisories.

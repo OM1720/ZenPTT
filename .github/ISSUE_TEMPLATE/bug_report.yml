@@ -1,0 +1,61 @@
+name: Bug report
+description: Report a reproducible problem in ZenPTT.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues are public. Do not include email addresses, passwords, signing keys,
+        channel codes, conversation audio, raw logs, private diagnostic reports, or
+        server addresses. Report vulnerabilities privately through GitHub Advisories.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Android
+        - Browser
+        - Server
+        - Headless client or ECHO
+        - Documentation or build
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: "Example: 0.14.3 or a commit ID"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Device and Android version, or operating system and browser.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostic details
+      description: Optional. Include only details you have reviewed and redacted.
+    validations:
+      required: false

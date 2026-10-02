@@ -28,6 +28,17 @@ ZenPTT exposes two user actions:
 Use the short code to identify one server-side JSON file. It is not an account,
 access token, or permanent identifier.
 
+## Public bug reports
+
+Reproducible software bugs can be submitted through the
+[GitHub Bug report form](https://github.com/OM1720/ZenPTT/issues/new?template=bug_report.yml).
+Issues are public, so do not attach a full diagnostic report, raw logs, audio,
+channel codes, credentials, or server addresses. Share only the relevant
+redacted details after reviewing them. Security vulnerabilities belong in the
+private reporting channel described in [SECURITY.md](../SECURITY.md).
+External pull requests are not reviewed, and issue response times are not
+guaranteed; see [CONTRIBUTING.md](../CONTRIBUTING.md).
+
 ## Report contents
 
 The structured report contains:

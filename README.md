@@ -1,9 +1,13 @@
 # ZenPTT
 
-ZenPTT is an Android Push-to-Talk application with half-duplex channels,
-personal headless ECHO tests, learned headset hardware PTT, Bluetooth communication audio,
-background operation, automatic reconnect, support diagnostics, and
-server-hosted APK updates.
+ZenPTT is a self-hosted push-to-talk system with an Android client, a browser
+client, and a Python server. It supports half-duplex channels, personal ECHO
+tests, headset hardware PTT, Bluetooth communication audio, automatic reconnect,
+and support diagnostics.
+
+This repository distributes source code. Android APK downloads and in-app updates
+are hosted by the ZenPTT server; GitHub Releases contain source archives without
+APK files. See [the user guide](docs/USER_GUIDE.md) for setup and daily use.
 
 The Python headless runtime provides the required multi-session Echo supervisor.
 A separate QRZ developer example demonstrates the public bot API without entering
@@ -22,24 +26,36 @@ public TLS termination.
 
 ## Requirements
 
-- Docker Engine with Docker Compose for the server;
+- Docker Engine with its Linux engine, Docker Compose, and PowerShell for the
+  browser build and local server;
 - Android 12/API 31 or newer for the client;
 - Android Studio or JDK 17 plus Android SDK 35 to build the APK;
 - a paired headset when testing hardware PTT and Bluetooth audio; BM008 uses SPP,
   while the common wizard checks media/HID/SPP/BLE rules; see
   [`docs/HEADSET_PTT.md`](docs/HEADSET_PTT.md).
 
-## Start the local server
+## Start the local server and browser client
 
-From the repository root:
+From the repository root, build the browser client before starting the stack.
+The build runs in pinned Linux containers and exports the ignored `web/dist`
+directory used by Caddy:
+
+```powershell
+.\scripts\build-web.ps1
+```
+
+Then start the stack:
 
 ```console
 docker compose --env-file server.local.env up -d --build
 curl http://127.0.0.1:8080/health
 ```
 
-The expected response is `{"status":"ok"}`. FastAPI port 8000 remains private
-inside the Docker network. A debug APK on the same LAN connects to
+The expected response is `{"status":"ok"}`. Open
+<http://127.0.0.1:8080/> or <http://127.0.0.1:8080/web/> in Chrome on Windows.
+For isolated browser development, see [the browser client guide](docs/WEB_CLIENT.md).
+FastAPI port 8000 remains private inside the Docker network. A debug APK on
+the same LAN connects to
 `ws://<computer-LAN-IP>:8080`; an Android Emulator uses
 `ws://10.0.2.2:8080`.
 
@@ -96,6 +112,9 @@ diagnostics.
 
 ## Run the development gate
 
+For the test-host iteration, explicit local commit, and separately authorized
+GitHub push, follow [the development workflow](docs/DEVELOPMENT_WORKFLOW.md).
+
 Create `.venv`, install both `server[dev]` and `headless[dev]`, and install FFmpeg
 on PATH for offline audio tests. The full gate also needs the Android SDK/NDK
 components listed in [`docs/TESTING.md`](docs/TESTING.md). Run on Windows:
@@ -128,18 +147,20 @@ rollback, and operation.
 Start with [`docs/PRODUCT.md`](docs/PRODUCT.md) for product requirements or
 [`ARCHITECTURE.md`](ARCHITECTURE.md) for implementation boundaries.
 
+To report a reproducible bug, use the
+[GitHub Bug report form](https://github.com/OM1720/ZenPTT/issues/new?template=bug_report.yml).
+The [contribution guidelines](CONTRIBUTING.md) explain what reports are accepted
+and how to keep private information out of public issues.
+
 ## License and security
 
 ZenPTT source is licensed under the [MIT License](LICENSE). Bundled third-party
 materials retain their own license notices in the Android and web clients.
-External issues and pull requests are not currently reviewed. Report security
-vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+Bug reports are accepted through GitHub Issues. External pull requests are not
+reviewed. Report security vulnerabilities privately as described in
+[SECURITY.md](SECURITY.md).
 
 ## Source distribution
-
-This GitHub repository distributes source code only. Android APK downloads and
-in-app updates use the server-hosted path described above. GitHub Releases
-provide source archives without attached APKs.
 
 Source release tags use `vX.Y.Z` and match the Android `versionName` in
 `android/app/build.gradle.kts` at that snapshot. Increment Android `versionCode`

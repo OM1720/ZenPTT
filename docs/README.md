@@ -30,6 +30,8 @@ Update when: a maintained document is added, removed, renamed, or changes author
 | Develop the browser client | [`WEB_CLIENT.md`](WEB_CLIENT.md) | [`protocol.md`](protocol.md), [`TESTING.md`](TESTING.md) |
 | Check browser audio on real devices | [`MANUAL_TESTING.md`](MANUAL_TESTING.md#browser-client) | [`WEB_CLIENT.md`](WEB_CLIENT.md) |
 | Diagnose a problem | [`SUPPORT.md`](SUPPORT.md) | [`MANUAL_TESTING.md`](MANUAL_TESTING.md) |
+| Report a software bug | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | [`SUPPORT.md`](SUPPORT.md), [`SECURITY.md`](../SECURITY.md) |
+| Prepare a commit or publication | [`DEVELOPMENT_WORKFLOW.md`](DEVELOPMENT_WORKFLOW.md) | [`TESTING.md`](TESTING.md) |
 
 ## Document catalog
 
@@ -43,6 +45,7 @@ support output is not part of the maintained documentation.
 | [`docs/README.md`](README.md) | This catalog, document authority, and writing conventions. | All contributors and readers |
 | [`LICENSE`](../LICENSE) | MIT terms for ZenPTT source. | Users, developers, distributors |
 | [`SECURITY.md`](../SECURITY.md) | Private vulnerability reporting and supported-version policy. | Users, security researchers, maintainers |
+| [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Public bug reports, privacy, and external contribution policy. | Users, bug reporters, maintainers |
 | [`PRODUCT.md`](PRODUCT.md) | Supported product, user-visible outcomes, and intentional scope. | Product owners, developers, testers |
 | [`ARCHITECTURE.md`](../ARCHITECTURE.md) | Component ownership, data flow, state, concurrency, and persistence. | Developers, architecture reviewers |
 | [`WEB_CLIENT.md`](WEB_CLIENT.md) | Browser behavior, local development, and automated verification. | Developers, testers, operators |
@@ -62,6 +65,7 @@ support output is not part of the maintained documentation.
 | [`MANUAL_TESTING.md`](MANUAL_TESTING.md) | Physical Android, headset, browser, degraded-network, and deployment checks. | Testers, release owners, support engineers |
 | [`SUPPORT.md`](SUPPORT.md) | Diagnostic contents, privacy, retention, collection commands, and triage. | Users, support engineers, operators |
 | [`DEPLOYMENT.md`](DEPLOYMENT.md) | Four-file server delivery, Ubuntu installation, rollback, and operations. | Release owners, server operators |
+| [`DEVELOPMENT_WORKFLOW.md`](DEVELOPMENT_WORKFLOW.md) | Test-host iteration, local commits, and GitHub publication. | Maintainers, development assistants |
 | [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md) | Intentional product, recovery, hardware, and bot limitations. | Users, product owners, developers, operators |
 | [`server/releases/README.md`](../server/releases/README.md) | Generated APK metadata, immutable artifacts, and download routes. | Developers, release owners |
 | [`examples/qrz_bot/assets/README.md`](../examples/qrz_bot/assets/README.md) | QRZ audio generation, pinned hash, PCM format, and offline preparation. | Bot developers, asset maintainers |
@@ -120,4 +124,4 @@ omitted. Its abbreviated labels are not complete wire schemas: use `protocol.md`
 - Link to one authoritative explanation instead of repeating it.
 - Begin maintained technical and operational documents with `Status`, `Purpose`,
   `Audience`, `Authority`, `Code anchors`, and `Update when`. The root `README.md`,
-  `SECURITY.md`, and `LICENSE` use their GitHub-facing formats instead.
+  `CONTRIBUTING.md`, `SECURITY.md`, and `LICENSE` use their GitHub-facing formats instead.

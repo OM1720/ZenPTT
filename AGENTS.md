@@ -96,3 +96,20 @@ When priorities conflict, call out the tradeoff briefly before choosing.
   contract change.
 - For a release, run `scripts/test-full.ps1`, then create and validate the
   delivery only with `scripts/build-hosting-package.ps1`.
+
+## 10. Development And Publication Workflow
+
+- Follow `docs/DEVELOPMENT_WORKFLOW.md`: change code, run local checks, deliver
+  the package to the test host, run acceptance checks, and repeat as needed.
+- Create a local project commit only after an explicit user command to commit.
+  Use an English Conventional Commits subject. A deployment or a passing test
+  does not authorize a commit.
+- Push only after a separate explicit user command to push. A command to commit
+  does not authorize a push, tag, GitHub Release, or pull request.
+- Review the staged diff before committing and all outgoing commits before
+  pushing. Run the publication checks and never bypass the Git hooks.
+- Keep test-host configuration, credentials, transfer helpers, deliveries, and
+  acceptance evidence in ignored local paths. Public scripts and documentation
+  must use placeholders and must not contain the operator's host details.
+- Keep the tested source unchanged until the requested commit. If source or
+  build configuration changes, repeat the affected build and acceptance checks.
