@@ -197,6 +197,8 @@ async def test_concurrent_sessions_preserve_siblings_and_host_signals(monkeypatc
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        # Restore before pytest-asyncio's runner resets its own SIGINT handler.
+        monkeypatch.undo()
     assert all(client.stopped.is_set() for client in clients)
     assert all(signal.getsignal(signum) == value for signum, value in previous.items())
 
