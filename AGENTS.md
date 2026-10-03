@@ -106,6 +106,12 @@ When priorities conflict, call out the tradeoff briefly before choosing.
   does not authorize a commit.
 - Push only after a separate explicit user command to push. A command to commit
   does not authorize a push, tag, GitHub Release, or pull request.
+- Before each requested push, compare the outgoing commits with the latest
+  GitHub release and recommend whether its version should change. Give the
+  proposed version and reason, including any Android `versionCode` or
+  `versionName` impact. Follow the user's explicit decision for those commits;
+  if it has not been given, ask before pushing. Do not change version fields or
+  create, move, or publish tags or releases without explicit authorization.
 - Review the staged diff before committing and all outgoing commits before
   pushing. Run the publication checks and never bypass the Git hooks.
 - Keep test-host configuration, credentials, transfer helpers, deliveries, and

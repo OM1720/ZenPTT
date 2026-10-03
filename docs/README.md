@@ -30,7 +30,7 @@ Update when: a maintained document is added, removed, renamed, or changes author
 | Develop the browser client | [`WEB_CLIENT.md`](WEB_CLIENT.md) | [`protocol.md`](protocol.md), [`TESTING.md`](TESTING.md) |
 | Check browser audio on real devices | [`MANUAL_TESTING.md`](MANUAL_TESTING.md#browser-client) | [`WEB_CLIENT.md`](WEB_CLIENT.md) |
 | Diagnose a problem | [`SUPPORT.md`](SUPPORT.md) | [`MANUAL_TESTING.md`](MANUAL_TESTING.md) |
-| Report a software bug | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | [`SUPPORT.md`](SUPPORT.md), [`SECURITY.md`](../SECURITY.md) |
+| Report a software bug | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | [`SUPPORT.md`](SUPPORT.md), [`SECURITY.md`](../SECURITY.md), [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) |
 | Prepare a commit or publication | [`DEVELOPMENT_WORKFLOW.md`](DEVELOPMENT_WORKFLOW.md) | [`TESTING.md`](TESTING.md) |
 
 ## Document catalog
@@ -46,6 +46,7 @@ support output is not part of the maintained documentation.
 | [`LICENSE`](../LICENSE) | MIT terms for ZenPTT source. | Users, developers, distributors |
 | [`SECURITY.md`](../SECURITY.md) | Private vulnerability reporting and supported-version policy. | Users, security researchers, maintainers |
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Public bug reports, privacy, and external contribution policy. | Users, bug reporters, maintainers |
+| [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) | Conduct rules and moderation for repository discussions. | Bug reporters, maintainers |
 | [`PRODUCT.md`](PRODUCT.md) | Supported product, user-visible outcomes, and intentional scope. | Product owners, developers, testers |
 | [`ARCHITECTURE.md`](../ARCHITECTURE.md) | Component ownership, data flow, state, concurrency, and persistence. | Developers, architecture reviewers |
 | [`WEB_CLIENT.md`](WEB_CLIENT.md) | Browser behavior, local development, and automated verification. | Developers, testers, operators |

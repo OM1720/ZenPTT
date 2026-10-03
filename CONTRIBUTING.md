@@ -5,6 +5,8 @@ ZenPTT accepts reproducible bug reports through the
 External pull requests are not reviewed. There is no guaranteed response or fix
 time for an issue.
 
+Interactions in this repository follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 Before reporting a bug, check the [known limitations](docs/KNOWN_LIMITATIONS.md)
 and existing issues. Include the affected component, version or commit, device
 and operating system or browser, steps to reproduce, and what you expected and

@@ -61,7 +61,7 @@ On Windows build-directory locking, use `-AndroidWorkDirectory C:\tmp\zenptt-che
 to run the full gate and publish its matching APK from a dedicated temporary build
 directory. All delivery checks still run; do not combine this with `-SkipChecks`.
 
-For a server-only update that must retain the already published Android APK, use
+For a server or browser-only update that retains the published Android APK, use
 `-ReusePublishedApk`. The full gate and delivery checks still run, and the builder
 verifies the existing APK against `server/releases/release.json`. Do not use this
 option when the Android changes are intended for release; publish them with a new

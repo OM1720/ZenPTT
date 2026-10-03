@@ -130,12 +130,16 @@ Physical checks are in [`docs/MANUAL_TESTING.md`](docs/MANUAL_TESTING.md).
 
 ## Deploy the public server
 
-Set the real DNS name in the first line of `server.env`, increment Android
-`versionCode`, and build the four-file delivery package:
+Set the real DNS name in the first line of `server.env`. Increment Android
+`versionCode` only when publishing a distinct APK, then build the four-file
+delivery package:
 
 ```console
 .\scripts\build-hosting-package.ps1
 ```
+
+For a server or browser-only update, use `-ReusePublishedApk` to retain the
+exact previously published APK and its release metadata.
 
 Deploy or update Ubuntu 24.04 with `sudo bash install-update.sh`. See
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for DNS, firewall, validation,
@@ -162,10 +166,12 @@ reviewed. Report security vulnerabilities privately as described in
 
 ## Source distribution
 
-Source release tags use `vX.Y.Z` and match the Android `versionName` in
-`android/app/build.gradle.kts` at that snapshot. Increment Android `versionCode`
-for every distinct APK, including a rebuild that changes its bytes. The server,
-headless, and web package versions are independent of the source release tag.
+GitHub source release tags use the project-wide `vX.Y.Z` series, starting at
+`v0.9.0`. Increment the patch number for fixes and the minor number for new
+features; describe compatibility changes in the release notes. The source tag
+is independent of Android `versionName` and the server, headless, and web
+package versions. Increment Android `versionCode` for every distinct APK,
+including a rebuild that changes its bytes.
 
 ## Repository layout
 

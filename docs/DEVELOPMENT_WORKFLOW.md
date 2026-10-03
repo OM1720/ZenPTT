@@ -60,8 +60,10 @@ Fix failures and repeat this step. Passing tests do not authorize a commit or pu
 Increment Android `versionCode` before every distinct APK, including test-host
 builds. Changing `ZENPTT_DOMAIN` changes the default address compiled into the APK.
 Use `-ReusePublishedApk` only when intentionally retaining the exact published
-APK for a server-only update. GitHub tags and `versionName` are not changed for
-every development iteration; source release tags are separate explicit actions.
+APK for a server or browser-only update. GitHub source releases use project-wide
+`vX.Y.Z` tags starting at `v0.9.0`, independently of Android `versionName`.
+Neither a source tag nor `versionName` changes for every development iteration;
+source release tags are separate explicit actions.
 
 ## 2. Commit locally only when requested
 
@@ -94,6 +96,15 @@ A commit command does not authorize a push. When the user explicitly requests
 a push, verify `gh api user --jq .login`, the destination, the outgoing commits,
 and their acceptance evidence. For the owner's repository the account is `OM1720`.
 Push only the intended branch; do not use `--all`, `--mirror`, or force options.
+
+Before pushing, compare the outgoing commits with the latest GitHub release.
+Recommend whether to retain its version or use a new one, and give the exact
+proposed version and reason. State separately whether the Android APK changes
+and whether `versionCode` or `versionName` must change. The user decides for
+these outgoing commits; if that decision is not already explicit, ask before
+pushing. Do not change version fields or create, move, or publish tags or
+releases based on a push request alone. If the decision requires a source or
+build change, repeat the affected checks and acceptance before publication.
 
 The `pre-push` hook checks the actual refs Git is about to send. It rejects an
 unexpected remote or a different initial Git root. It scans every reachable
