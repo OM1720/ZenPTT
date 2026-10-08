@@ -90,6 +90,9 @@ class ClientSession:
 
     outbound_queue: deque[OutboundMessage] = field(init=False, default_factory=deque)
     queued_bytes: int = 0
+    backpressure_started_ms: int | None = None
+    backpressure_offers: int = 0
+    backpressure_peak_bytes: int = 0
     outbound_ready: asyncio.Event = field(init=False, default_factory=asyncio.Event)
     close_task: asyncio.Task[None] | None = None
     outbound_capacity_callback: Callable[[], None] | None = None
@@ -135,19 +138,43 @@ class ClientSession:
         if self.closing:
             return False
         if size > self.max_outbound_bytes or self.queued_bytes + size > self.max_outbound_bytes:
-            logger.warning(
-                "outbound_backlog_limit session=%s queued_bytes=%d offered_bytes=%d",
-                self.session_id,
-                self.queued_bytes,
-                size,
-            )
             if close_on_limit:
+                logger.warning(
+                    "outbound_backlog_limit session=%s queued_bytes=%d offered_bytes=%d",
+                    self.session_id,
+                    self.queued_bytes,
+                    size,
+                )
                 self._schedule_close(1008)
+            else:
+                if self.backpressure_started_ms is None:
+                    self.backpressure_started_ms = self.now_ms()
+                self.backpressure_offers += 1
+                self.backpressure_peak_bytes = max(self.backpressure_peak_bytes, self.queued_bytes)
             return False
+        if not close_on_limit:
+            self._finish_backpressure(recovered=True)
         self.outbound_queue.append((kind, message, size, media_context))
         self.queued_bytes += size
         self.outbound_ready.set()
         return True
+
+    def _finish_backpressure(self, *, recovered: bool) -> None:
+        started = self.backpressure_started_ms
+        if started is None:
+            return
+        logger.info(
+            "outbound_backpressure session=%s duration_ms=%d blocked_offers=%d "
+            "peak_queued_bytes=%d recovered=%s",
+            self.session_id,
+            max(0, self.now_ms() - started),
+            self.backpressure_offers,
+            self.backpressure_peak_bytes,
+            str(recovered).lower(),
+        )
+        self.backpressure_started_ms = None
+        self.backpressure_offers = 0
+        self.backpressure_peak_bytes = 0
 
     def start_outbound(self) -> None:
         self.outbound_task = asyncio.create_task(self.run_outbound())
@@ -158,6 +185,7 @@ class ClientSession:
             await self.websocket.close(code=code)
 
     async def stop_outbound(self) -> None:
+        self._finish_backpressure(recovered=False)
         self.outbound_capacity_callback = None
         downlink_task = self.downlink_task
         self.downlink_task = None

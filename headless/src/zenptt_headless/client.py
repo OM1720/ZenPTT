@@ -21,6 +21,8 @@ from .types import FRAME_BYTES, FRAME_DURATION_MS, MAX_FRAMES, PcmAudio, Receive
 
 logger = logging.getLogger("zenptt.headless")
 FRAME_SECONDS = FRAME_DURATION_MS / 1_000
+FRESH_BATCH_FRAMES = 3
+FRESH_BATCH_WAIT_SECONDS = 2 * FRAME_SECONDS
 WRITE_TIMEOUT_SECONDS = 1.0
 PTT_REQUEST_TIMEOUT_SECONDS = 5.0
 
@@ -63,11 +65,15 @@ class _Outgoing:
     started_at: float | None = None
     disconnected_at: float | None = None
     stop_reason: str | None = None
+    release_reason: str | None = None
+    released_without_final: bool = False
     terminal: dict | None = None
     terminal_at: float | None = None
     active: bool = True
     retained: dict[int, bytes] = field(default_factory=dict)
+    ready_at: dict[int, float] = field(default_factory=dict)
     sent_transport: int = -1
+    replay_until_sequence: int = 0
     sent_sequences: set[int] = field(default_factory=set)
     changed: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -271,6 +277,7 @@ class HeadlessClient:
                 if len(frame) < FRAME_BYTES:
                     frame += bytes(FRAME_BYTES - len(frame))
                 outgoing.retained[sequence] = encoder.encode(frame)
+                outgoing.ready_at[sequence] = self._now()
                 outgoing.next_sequence = sequence + 1
                 self._prune_retained(outgoing)
                 outgoing.changed.set()
@@ -287,6 +294,7 @@ class HeadlessClient:
             for sequence in tuple(outgoing.retained):
                 if sequence >= outgoing.final_next_sequence:
                     outgoing.retained.pop(sequence, None)
+                    outgoing.ready_at.pop(sequence, None)
                     outgoing.sent_sequences.discard(sequence)
             outgoing.finalization_deadline = (
                 self._now() + self._recovery_horizon_seconds() + 5
@@ -340,6 +348,16 @@ class HeadlessClient:
             wait_seconds = 0.05
             if deadline is not None:
                 wait_seconds = max(0, min(wait_seconds, deadline - self._now()))
+            if (self._ready.is_set() and outgoing.phase == "transmitting"
+                    and outgoing.started_at is not None):
+                unsent = next((sequence for sequence in outgoing.retained
+                               if sequence >= outgoing.ack_next
+                               and sequence not in outgoing.sent_sequences), None)
+                if unsent is not None:
+                    due = outgoing.ready_at.get(
+                        unsent, outgoing.started_at + unsent * FRAME_SECONDS
+                    ) + FRESH_BATCH_WAIT_SECONDS
+                    wait_seconds = max(0, min(wait_seconds, due - self._now()))
             change_waiter = asyncio.create_task(outgoing.changed.wait())
             try:
                 await asyncio.wait({change_waiter}, timeout=wait_seconds)
@@ -356,6 +374,14 @@ class HeadlessClient:
     ) -> SendResult:
         local_final = outgoing.final_next_sequence
         if terminal["final_next_sequence"] != local_final:
+            if (
+                outgoing.released_without_final
+                and outgoing.release_reason in {"lease_expired", "duration_limit", "canceled", "expired"}
+                and terminal["final_next_sequence"] is not None
+                and local_final is not None
+                and terminal["final_next_sequence"] < local_final
+            ):
+                return SendResult("interrupted", outgoing.release_reason, outgoing.burst_id)
             return SendResult("interrupted", "final_sequence_mismatch", outgoing.burst_id)
         if outgoing.stop_reason is not None:
             return SendResult("interrupted", outgoing.stop_reason, outgoing.burst_id)
@@ -376,6 +402,8 @@ class HeadlessClient:
             return
         transport = context.generation
         if outgoing.sent_transport != transport:
+            if outgoing.sent_transport >= 0:
+                outgoing.replay_until_sequence = outgoing.next_sequence
             outgoing.sent_transport = transport
             outgoing.sent_sequences.clear()
         for sequence in tuple(outgoing.retained):
@@ -392,20 +420,47 @@ class HeadlessClient:
                 continue
             if sequence < outgoing.ack_next or sequence in outgoing.sent_sequences:
                 continue
+            replay = sequence < outgoing.replay_until_sequence
+            packets = [(sequence, packet)]
+            size = 24 + 2 + len(packet)
+            limit = 50 if replay else FRESH_BATCH_FRAMES
+            while len(packets) < limit:
+                next_sequence = sequence + len(packets)
+                next_packet = outgoing.retained.get(next_sequence)
+                if (next_packet is None or next_sequence < outgoing.ack_next
+                        or next_sequence in outgoing.sent_sequences
+                        or replay != (next_sequence < outgoing.replay_until_sequence)
+                        or (outgoing.final_next_sequence is not None
+                            and next_sequence >= outgoing.final_next_sequence)
+                        or size + 2 + len(next_packet) > MAX_MESSAGE_BYTES):
+                    break
+                packets.append((next_sequence, next_packet))
+                size += 2 + len(next_packet)
+            if (not replay and outgoing.phase == "transmitting"
+                    and len(packets) < FRESH_BATCH_FRAMES
+                    and outgoing.started_at is not None
+                    and self._now() < outgoing.ready_at.get(
+                        sequence, outgoing.started_at + sequence * FRAME_SECONDS
+                    ) + FRESH_BATCH_WAIT_SECONDS):
+                return
             sent = await self._send_bytes(
-                encode_media(UPLINK, outgoing.burst_id, sequence, (packet,)),
+                encode_media(UPLINK, outgoing.burst_id, sequence,
+                             tuple(item[1] for item in packets)),
                 epoch=outgoing.epoch,
                 transport=transport,
                 deadline=deadline,
-                audio=(outgoing, sequence, packet),
+                audio=(outgoing, tuple(packets)),
             )
-            if not sent or not self._outgoing_current(outgoing):
+            if not self._outgoing_current(outgoing) or not self._ready.is_set():
                 return
+            if not sent:
+                continue
             deadline = outgoing.finalization_deadline
             if deadline is not None and self._now() >= deadline:
                 return
-            if outgoing.retained.get(sequence) == packet:
-                outgoing.sent_sequences.add(sequence)
+            for sent_sequence, sent_packet in packets:
+                if outgoing.retained.get(sent_sequence) == sent_packet:
+                    outgoing.sent_sequences.add(sent_sequence)
 
     def _accept_grant(self, outgoing: _Outgoing, message: dict) -> bool:
         burst_id = message["burst_id"]
@@ -430,6 +485,7 @@ class HeadlessClient:
         ]
         for sequence in expired:
             outgoing.retained.pop(sequence, None)
+            outgoing.ready_at.pop(sequence, None)
             outgoing.sent_sequences.discard(sequence)
 
     def _disconnect_expired(self, outgoing: _Outgoing) -> bool:
@@ -757,6 +813,7 @@ class HeadlessClient:
                 for sequence in tuple(outgoing.retained):
                     if sequence < outgoing.ack_next:
                         outgoing.retained.pop(sequence, None)
+                        outgoing.ready_at.pop(sequence, None)
                         outgoing.sent_sequences.discard(sequence)
                 outgoing.changed.set()
         elif kind == "audio_rejected":
@@ -783,6 +840,11 @@ class HeadlessClient:
                     if message["state"] == "sealed" and message != previous:
                         logger.warning("conflicting_terminal burst=%s", outgoing.burst_id)
                     return
+                if message["state"] == "draining" and outgoing.release_reason is None:
+                    outgoing.release_reason = message["reason"]
+                    outgoing.released_without_final = message["final_next_sequence"] is None
+                    if message["reason"] in {"lease_expired", "duration_limit", "canceled", "expired"}:
+                        outgoing.stop_reason = outgoing.stop_reason or message["reason"]
                 outgoing.terminal = message
                 if message["state"] == "sealed":
                     outgoing.terminal_at = self._now()
@@ -861,6 +923,7 @@ class HeadlessClient:
             self._outgoing.active = False
             self._outgoing.stop_reason = reason
             self._outgoing.retained.clear()
+            self._outgoing.ready_at.clear()
             self._outgoing.sent_sequences.clear()
             self._outgoing.changed.set()
         for waiter in self._control_waiters.values():
@@ -929,7 +992,7 @@ class HeadlessClient:
         epoch: int | None = None,
         transport: int | None = None,
         deadline: float | None = None,
-        audio: tuple[_Outgoing, int, bytes] | None = None,
+        audio: tuple[_Outgoing, tuple[tuple[int, bytes], ...]] | None = None,
         on_send_start: Callable[[], None] | None = None,
     ) -> bool:
         return await self._send_current(
@@ -948,7 +1011,7 @@ class HeadlessClient:
         epoch: int | None,
         transport: int | None,
         deadline: float | None = None,
-        audio: tuple[_Outgoing, int, bytes] | None = None,
+        audio: tuple[_Outgoing, tuple[tuple[int, bytes], ...]] | None = None,
         on_send_start: Callable[[], None] | None = None,
     ) -> bool:
         context = self._transport
@@ -988,7 +1051,7 @@ class HeadlessClient:
         *,
         deadline: float | None = None,
         require_ready: bool = True,
-        audio: tuple[_Outgoing, int, bytes] | None = None,
+        audio: tuple[_Outgoing, tuple[tuple[int, bytes], ...]] | None = None,
         on_send_start: Callable[[], None] | None = None,
     ) -> bool:
         if not self._transport_current(context):
@@ -1011,22 +1074,23 @@ class HeadlessClient:
                 if require_ready and not self._ready.is_set():
                     return False
                 if audio is not None:
-                    outgoing, sequence, packet = audio
+                    outgoing, packets = audio
                     self._prune_retained(outgoing)
                     current_deadline = outgoing.finalization_deadline
                     if current_deadline is not None and self._now() >= current_deadline:
                         return False
                     if (
                         not self._outgoing_current(outgoing)
-                        or sequence < outgoing.ack_next
-                        or sequence in outgoing.sent_sequences
-                        or outgoing.retained.get(sequence) != packet
-                        or (
-                            outgoing.final_next_sequence is not None
-                            and sequence >= outgoing.final_next_sequence
+                        or any(
+                            sequence < outgoing.ack_next
+                            or sequence in outgoing.sent_sequences
+                            or outgoing.retained.get(sequence) != packet
+                            or (outgoing.final_next_sequence is not None
+                                and sequence >= outgoing.final_next_sequence)
+                            for sequence, packet in packets
                         )
                     ):
-                        return True
+                        return False
                 if deadline is not None and self._now() >= deadline:
                     return False
                 if on_send_start is not None:

@@ -116,6 +116,8 @@ object NoOpAudioGate : AudioGate {
     override fun play(burstId: String, message: ByteArray) = true
 }
 
+private data class PendingFinalSequence(val count: Long, val interruptionSignaled: Boolean)
+
 class ChannelViewModel(
     addressStore: ConnectionPreferences,
     private val connection: ConnectionClient,
@@ -143,6 +145,10 @@ class ChannelViewModel(
     private var ackWatchdog = AckWatchdogState()
     private var captureDeadlines: CaptureDeadlines? = null
     private var outgoingQueueBytes = 0L
+    private var freshFrameDeadlineMs: Long? = null
+    private var freshFrameJob: Job? = null
+    private var replayingAudio = false
+    private val pendingFinalSequences = linkedMapOf<String, PendingFinalSequence>()
     val state: StateFlow<ChannelUiState> = _state.asStateFlow()
 
     private val socketGeneration: Long
@@ -562,6 +568,8 @@ class ChannelViewModel(
             awaitingSnapshot?.resetReliableState == true ||
             (previousEpoch != null && previousEpoch.incarnationId != session.channelIncarnationId)
         val resuming = previousEpoch != null && !resetReliableState
+        if (resuming || resetReliableState) clearFreshFrameWait()
+        replayingAudio = resuming
         val interruptionIndicator = when {
             resetReliableState && ptt.localInterruptionNeeded() -> AudioIndicator.TransmissionInterrupted
             resetReliableState && ptt.localRequestActive() -> AudioIndicator.PttRejected
@@ -680,16 +688,49 @@ class ChannelViewModel(
     }
 
     private fun handlePttEnded(event: ControlEvent.PttEnded) {
+        val burst = outgoingAudio.burst(event.burstId)
+        if (burst != null) clearFreshFrameWait()
+        val localFinal = burst?.finalNextSequence ?: burst?.nextSequence
+        if (event.state == "draining" && localFinal != null) {
+            pendingFinalSequences[event.burstId] = PendingFinalSequence(
+                localFinal, event.reason !in setOf("released", "complete"),
+            )
+        }
+        val pendingFinal = if (event.state == "sealed") pendingFinalSequences.remove(event.burstId) else null
+        val expectedFinal = pendingFinal?.count ?: if (event.state == "sealed") localFinal else null
+        val finalMismatch = expectedFinal != null && event.state == "sealed" &&
+            event.finalNextSequence != expectedFinal
+        if (finalMismatch) {
+            diagnostics.connectionDiagnostic(
+                "Outgoing final sequence mismatch burst=${event.burstId.takeLast(6)} " +
+                    "local=$expectedFinal server=${event.finalNextSequence}",
+            )
+            val message = if (
+                event.finalNextSequence != null &&
+                event.finalNextSequence < expectedFinal
+            ) {
+                "Transmission ended before all captured audio was accepted."
+            } else {
+                "Transmission frame count could not be verified."
+            }
+            reportError(UiErrorTarget.General, message)
+        }
         outgoingAudio.confirmReleased(event.burstId)
         if (captureDeadlines?.burstId == event.burstId) captureDeadlines = null
         updateUplinkQuality()
-        val terminal = ptt.ended(event.burstId) ?: return
+        val terminal = ptt.ended(event.burstId)
+        if (terminal == null) {
+            if (finalMismatch && pendingFinal?.interruptionSignaled != true) {
+                audio.playIndicator(AudioIndicator.TransmissionInterrupted)
+            }
+            return
+        }
         val terminalIndicator = terminal.indicator
         val restartAfterRecovery = terminal.actions.any { it is PttAction.Request }
         val indicator = when {
             restartAfterRecovery -> null
             terminalIndicator == LocalTerminalIndicator.Suppress -> null
-            event.reason !in setOf("released", "complete") -> AudioIndicator.TransmissionInterrupted
+            finalMismatch || event.reason !in setOf("released", "complete") -> AudioIndicator.TransmissionInterrupted
             terminalIndicator == LocalTerminalIndicator.ChannelFree -> AudioIndicator.ChannelFree
             else -> null
         }
@@ -702,6 +743,8 @@ class ChannelViewModel(
 
     override fun onReconnecting(attempt: Int) = synchronized(pttTransitionLock) {
         connectionPhase = ConnectionPhase.Reconnecting
+        clearFreshFrameWait()
+        replayingAudio = true
         diagnostics.connectionReconnecting(attempt)
         cancelPttTimeout()
         beginPttTransportRecovery()
@@ -716,6 +759,8 @@ class ChannelViewModel(
     }
 
     override fun onConnectionError() = synchronized(pttTransitionLock) {
+        clearFreshFrameWait()
+        replayingAudio = true
         cancelPendingPtt(PENDING_CONNECTION_ERROR)
         beginPttTransportRecovery()
         connectionPhase = ConnectionPhase.Failed
@@ -924,7 +969,12 @@ class ChannelViewModel(
                 } else true
             }
             is PttAction.Finish -> {
-                outgoingAudio.finish(action.burstId)
+                val final = outgoingAudio.finish(action.burstId)
+                if (final != null) {
+                    pendingFinalSequences[action.burstId]?.let {
+                        pendingFinalSequences[action.burstId] = it.copy(count = final)
+                    }
+                }
                 if (captureDeadlines?.burstId == action.burstId) captureDeadlines = null
                 if (action.interrupted) {
                     ptt.markLocalInterruptionSignaled()
@@ -953,13 +1003,38 @@ class ChannelViewModel(
 
     private fun storeAndSendAudio(packet: ByteArray): Boolean = synchronized(pttTransitionLock) {
         val burstId = ptt.activeBurstId() ?: return@synchronized false
-        outgoingAudio.add(burstId, packet, nowMs()) ?: return@synchronized false
+        val frame = outgoingAudio.add(burstId, packet, nowMs()) ?: return@synchronized false
+        pendingFinalSequences[burstId]?.let {
+            pendingFinalSequences[burstId] = it.copy(count = frame.sequence + 1)
+        }
         updateUplinkQuality()
         flushSender()
         true
     }
 
-    private fun flushSender(): Boolean {
+    private fun clearFreshFrameWait() {
+        freshFrameJob?.cancel()
+        freshFrameJob = null
+        freshFrameDeadlineMs = null
+    }
+
+    private fun waitingForFreshFrames(now: Long): Boolean {
+        val deadline = freshFrameDeadlineMs ?: (now + FRESH_FRAME_WAIT_MS).also {
+            freshFrameDeadlineMs = it
+            val generation = socketGeneration
+            freshFrameJob = runtimeScope.launch {
+                delay(FRESH_FRAME_WAIT_MS)
+                synchronized(pttTransitionLock) {
+                    if (freshFrameDeadlineMs == it && socketGeneration == generation) {
+                        flushSender(forceFresh = true)
+                    }
+                }
+            }
+        }
+        return now < deadline
+    }
+
+    private fun flushSender(forceFresh: Boolean = false): Boolean {
         val now = nowMs()
         outgoingAudio.expire(now)
         val oldestSentUnacknowledgedAgeMs =
@@ -986,8 +1061,13 @@ class ChannelViewModel(
             if (channel != null) connection.connect(_state.value.serverAddress, channel, this)
             return false
         }
-        val range = outgoingAudio.nextRange(now, socketGeneration)
-        if (range != null) {
+        val maxFrames = if (replayingAudio) AudioFrameCodec.MAX_FRAMES_PER_MESSAGE else FRESH_FRAMES_PER_MESSAGE
+        val range = outgoingAudio.nextRange(now, socketGeneration, maxFrames)
+        val waitForGroup = range != null && !replayingAudio && !range.retransmit &&
+            outgoingAudio.burst(range.burstId)?.finalNextSequence == null &&
+            range.packets.size < FRESH_FRAMES_PER_MESSAGE && !forceFresh &&
+            waitingForFreshFrames(now)
+        if (range != null && !waitForGroup) {
             val message = AudioFrameCodec.encode(
                 NetworkAudioEnvelope(
                     MediaDirection.Uplink,
@@ -1012,9 +1092,11 @@ class ChannelViewModel(
                     )
                 }
                 outgoingAudio.markRangeSent(range, socketGeneration, now)
+                clearFreshFrameWait()
                 repeat(range.packets.size) { diagnostics.audioSent() }
             }
         }
+        if (replayingAudio && outgoingAudio.nextRange(now, socketGeneration) == null) replayingAudio = false
         outgoingAudio.sendableEnds(socketGeneration).forEach { end ->
             val sent = connection.finishBurst(end.burstId, end.finalNextSequence)
             if (sent) {
@@ -1148,6 +1230,9 @@ class ChannelViewModel(
     }
 
     private fun clearReliableAudioState() {
+        clearFreshFrameWait()
+        replayingAudio = false
+        pendingFinalSequences.clear()
         outgoingAudio.clear()
         incomingAudio.clear()
         playbackPumpJob?.cancel()
@@ -1389,6 +1474,8 @@ class ChannelViewModel(
     }
 
     private fun handleEchoUnavailable() {
+        clearFreshFrameWait()
+        replayingAudio = false
         stopPttQueue(clearNotice = true)
         cancelPttTimeout()
         captureDeadlines = null
@@ -1478,6 +1565,8 @@ class ChannelViewModel(
         const val PENDING_CONNECTION_ERROR =
             "Unable to connect — release and press PTT again."
         const val SENDER_SCHEDULER_INTERVAL_MS = 40L
+        const val FRESH_FRAMES_PER_MESSAGE = 3
+        const val FRESH_FRAME_WAIT_MS = 40L
         const val PLAYBACK_AHEAD_FRAMES = 5
         const val PLAYBACK_CAPACITY_POLL_MS = 5L
         val DOWNLINK_STATUSES = setOf(SessionStatus.Receiving, SessionStatus.PlayingEcho)

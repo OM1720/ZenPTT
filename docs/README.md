@@ -30,6 +30,7 @@ Update when: a maintained document is added, removed, renamed, or changes author
 | Develop the browser client | [`WEB_CLIENT.md`](WEB_CLIENT.md) | [`protocol.md`](protocol.md), [`TESTING.md`](TESTING.md) |
 | Check browser audio on real devices | [`MANUAL_TESTING.md`](MANUAL_TESTING.md#browser-client) | [`WEB_CLIENT.md`](WEB_CLIENT.md) |
 | Diagnose a problem | [`SUPPORT.md`](SUPPORT.md) | [`MANUAL_TESTING.md`](MANUAL_TESTING.md) |
+| Review poor-link measurements | [`research/poor-link-2026-10-07.md`](research/poor-link-2026-10-07.md) | [`TESTING.md`](TESTING.md), [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md) |
 | Report a software bug | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | [`SUPPORT.md`](SUPPORT.md), [`SECURITY.md`](../SECURITY.md), [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) |
 | Prepare a commit or publication | [`DEVELOPMENT_WORKFLOW.md`](DEVELOPMENT_WORKFLOW.md) | [`TESTING.md`](TESTING.md) |
 
@@ -68,6 +69,7 @@ support output is not part of the maintained documentation.
 | [`DEPLOYMENT.md`](DEPLOYMENT.md) | Four-file server delivery, Ubuntu installation, rollback, and operations. | Release owners, server operators |
 | [`DEVELOPMENT_WORKFLOW.md`](DEVELOPMENT_WORKFLOW.md) | Test-host iteration, local commits, and GitHub publication. | Maintainers, development assistants |
 | [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md) | Intentional product, recovery, hardware, and bot limitations. | Users, product owners, developers, operators |
+| [`research/poor-link-2026-10-07.md`](research/poor-link-2026-10-07.md) | Dated bot, lease, and browser playback measurements with the selected tradeoff. | Developers, testers, release owners |
 | [`server/releases/README.md`](../server/releases/README.md) | Generated APK metadata, immutable artifacts, and download routes. | Developers, release owners |
 | [`examples/qrz_bot/assets/README.md`](../examples/qrz_bot/assets/README.md) | QRZ audio generation, pinned hash, PCM format, and offline preparation. | Bot developers, asset maintainers |
 | [`THIRD_PARTY_NOTICES.txt`](../android/app/src/main/assets/THIRD_PARTY_NOTICES.txt) | Attribution and license texts for the bundled UI icons. | Distributors, release owners |

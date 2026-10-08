@@ -60,6 +60,21 @@ class ReliableAudioStateTest {
     }
 
     @Test
+    fun freshRangeLimitKeepsTheFourthFrameForTheNextMessage() {
+        val store = OutgoingAudioStore()
+        store.start(BURST_1, 1, 0)
+        repeat(4) { store.add(BURST_1, byteArrayOf(it.toByte()), it * 20L) }
+
+        val first = requireNotNull(store.nextRange(60, 1, maxFrames = 3))
+        assertEquals(3, first.packets.size)
+        store.markRangeSent(first, 1, 60)
+
+        val tail = requireNotNull(store.nextRange(60, 1, maxFrames = 3))
+        assertEquals(3L, tail.firstSequence)
+        assertEquals(1, tail.packets.size)
+    }
+
+    @Test
     fun outgoingRangeCarriesCaptureBoundsAndRetransmitState() {
         val store = OutgoingAudioStore()
         store.start(BURST_1, 1, 0)

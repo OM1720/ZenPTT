@@ -19,6 +19,8 @@ const DISCONNECT_TIMEOUT_MS = 1000
 const PING_INTERVAL_MS = 1000
 const MAX_UNANSWERED_PINGS = 10
 const MAX_QUEUED_BYTES = 8192
+const FRESH_FRAMES_PER_MESSAGE = 3
+const FRESH_FRAME_WAIT_MS = 40
 const RECONNECT_DELAYS_MS = [0, 250, 500, 1000, 2000, 5000]
 
 export interface ClientState {
@@ -65,6 +67,10 @@ interface Transmission {
   stopping: boolean
   endSent: boolean
   restartAfter: boolean
+  interrupted: boolean
+  replaying: boolean
+  freshDeadline: number | null
+  freshTimer?: ReturnType<typeof setTimeout>
   timer: ReturnType<typeof setTimeout>
 }
 
@@ -251,7 +257,8 @@ export class ZenPttClient {
     const requestId = crypto.randomUUID()
     this.transmission = {
       requestId, burstId: null, buffer: null, progressAt: this.now(), requestedAt: this.now(),
-      captureStopped: false, stopping: false, endSent: false, restartAfter: false,
+      captureStopped: false, stopping: false, endSent: false, restartAfter: false, interrupted: false,
+      replaying: false, freshDeadline: null,
       timer: setTimeout(() => {
         this.pttUp()
         this.publish({ error: 'Transmission request timed out. Release and try again.' })
@@ -313,7 +320,7 @@ export class ZenPttClient {
   private stopTransmission(restart = false) {
     const tx = this.transmission
     this.transmission = null
-    if (tx) { clearTimeout(tx.timer); this.audio?.stopCapture(tx.requestId) }
+    if (tx) { clearTimeout(tx.timer); this.clearFreshTimer(tx); this.audio?.stopCapture(tx.requestId) }
     this.publish({ ptt: 'idle' })
     if (restart && this.held && !this.releaseRequired) this.requestTransmission()
   }
@@ -321,9 +328,18 @@ export class ZenPttClient {
   private interruptCapture(message: string) {
     this.audio?.cue('interrupted')
     this.releaseRequired = this.held
-    if (this.transmission) this.transmission.restartAfter = false
+    if (this.transmission) {
+      this.transmission.restartAfter = false
+      this.transmission.interrupted = true
+    }
     this.finishCapture()
     this.publish({ error: message })
+  }
+
+  private clearFreshTimer(tx: Transmission) {
+    clearTimeout(tx.freshTimer)
+    tx.freshTimer = undefined
+    tx.freshDeadline = null
   }
 
   private flushUplink() {
@@ -331,12 +347,27 @@ export class ZenPttClient {
     if (!tx?.buffer || !transport?.joined) return
     tx.buffer.expire(this.now())
     for (let i = 0; i < 4; i++) {
-      const next = tx.buffer.envelope()
+      const next = tx.buffer.envelope(tx.replaying ? undefined : FRESH_FRAMES_PER_MESSAGE)
       if (!next) break
+      if (!tx.replaying && !tx.captureStopped && next.count < FRESH_FRAMES_PER_MESSAGE) {
+        const now = this.now()
+        tx.freshDeadline ??= now + FRESH_FRAME_WAIT_MS
+        if (now < tx.freshDeadline) {
+          if (tx.freshTimer === undefined) {
+            tx.freshTimer = setTimeout(() => {
+              tx.freshTimer = undefined
+              if (this.transmission === tx && this.transport === transport) this.flushUplink()
+            }, Math.max(0, tx.freshDeadline - now))
+          }
+          break
+        }
+      }
       if (transport.socket.bufferedAmount + next.bytes.length > MAX_QUEUED_BYTES) return
       if (!this.sendRaw(transport, next.bytes)) return
       tx.buffer.sendCursor = next.next
+      this.clearFreshTimer(tx)
     }
+    if (tx.replaying && !tx.buffer.envelope()) tx.replaying = false
     if (tx.buffer.finalSequence !== null && !tx.endSent && !tx.buffer.envelope()) {
       tx.endSent = this.send(transport, { type: 'burst_end', burst_id: tx.buffer.burstId, final_next_sequence: tx.buffer.finalSequence })
     }
@@ -522,6 +553,8 @@ export class ZenPttClient {
       const tx = this.transmission
       if (tx?.buffer) {
         tx.buffer.rewind()
+        this.clearFreshTimer(tx)
+        tx.replaying = true
         tx.endSent = false
         tx.progressAt = this.now()
         if (!message.floor?.owned || message.floor.burst_id !== tx.burstId) {
@@ -579,7 +612,19 @@ export class ZenPttClient {
         break
       case 'ptt_ended':
         if (tx?.burstId === message.burst_id) {
-          if (message.state === 'sealed') this.stopTransmission(tx.restartAfter)
+          if (message.state === 'sealed') {
+            const localFinal = tx.buffer?.finalSequence ?? tx.buffer?.nextSequence
+            const finalMismatch = localFinal !== undefined && message.final_next_sequence !== localFinal
+            const truncated = localFinal !== undefined && message.final_next_sequence !== null
+              && message.final_next_sequence < localFinal
+            const interrupted = finalMismatch || !['released', 'complete'].includes(message.reason)
+            if (interrupted && !tx.interrupted) this.audio?.cue('interrupted')
+            this.stopTransmission(interrupted ? false : tx.restartAfter)
+            if (interrupted) this.publish({ error: finalMismatch
+              ? truncated ? 'Transmission ended before all captured audio was accepted.'
+                : 'Transmission frame count could not be verified.'
+              : 'Transmission was interrupted. Release and press PTT again.' })
+          }
           else if (!tx.stopping) this.finishCapture()
         }
         break
@@ -697,7 +742,7 @@ export class ZenPttClient {
     this.held = this.releaseRequired = false
     this.lastReset = null
     this.resetNotice = null
-    if (this.transmission) { clearTimeout(this.transmission.timer); this.transmission = null }
+    if (this.transmission) { clearTimeout(this.transmission.timer); this.clearFreshTimer(this.transmission); this.transmission = null }
     const audio = this.audio
     this.audio = null
     audio?.dispose()
@@ -712,6 +757,7 @@ export class ZenPttClient {
   private closeSocket(intentional: boolean): Promise<void> {
     const transport = this.transport
     if (!transport) return this.closing
+    if (this.transmission) this.clearFreshTimer(this.transmission)
     this.transport = null
     clearTimeout(transport.deadline)
     clearInterval(transport.heartbeat)

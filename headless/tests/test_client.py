@@ -67,16 +67,16 @@ async def test_uplink_pacing_does_not_wait_for_ack(ack_delay: float) -> None:
     client._ready.set()
     client._attach_transport(object())
     client._snapshot = {"audio_policy": {"recovery_horizon_ms": 1_000}}
-    writes: list[tuple[float, int]] = []
+    writes: list[tuple[float, int, int]] = []
     cumulative_ack = asyncio.Event()
 
     async def grant(outgoing):
         return {"type": "ptt_granted", "burst_id": BURST_ID}
 
     async def send_bytes(raw, **kwargs):
-        _, first, _ = decode_media(raw, 1)
-        writes.append((time.monotonic(), first))
-        if first == 4:
+        _, first, packets = decode_media(raw, 1)
+        writes.append((time.monotonic(), first, len(packets)))
+        if first <= 4 < first + len(packets):
             async def deliver_ack() -> None:
                 message = {
                     "type": "uplink_ack",
@@ -115,8 +115,8 @@ async def test_uplink_pacing_does_not_wait_for_ack(ack_delay: float) -> None:
 
     assert result.status == "sent"
     assert cumulative_ack.is_set()
-    assert [sequence for _, sequence in writes[:15]] == list(range(15))
-    assert writes[14][0] - writes[0][0] < 0.35
+    assert [sequence for _, first, count in writes for sequence in range(first, first + count)] == list(range(15))
+    assert writes[-1][0] - writes[0][0] < 0.35
 
 
 @pytest.mark.asyncio
@@ -277,9 +277,9 @@ async def test_floor_release_stops_new_frames_but_finishes_the_tail() -> None:
 
     async def send_bytes(raw, **kwargs):
         nonlocal released_at
-        _, first, _ = decode_media(raw, 1)
-        writes.append(first)
-        if first == 1:
+        _, first, packets = decode_media(raw, 1)
+        writes.extend(range(first, first + len(packets)))
+        if first == 0:
             released_at = client._outgoing.next_sequence
             await client._handle_control(
                 {
@@ -390,6 +390,29 @@ async def test_server_cannot_confirm_a_shorter_response_as_sent() -> None:
     result = await client._finish_outgoing(outgoing, 5)
     assert result.status == "interrupted"
     assert result.reason == "final_sequence_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_implicit_final_after_lease_expiry_reports_interruption() -> None:
+    client = HeadlessClient(ClientConfig("ws://test"))
+    outgoing = _Outgoing(
+        "request", 0, burst_id=BURST_ID, phase="finalizing",
+        next_sequence=5, final_next_sequence=5,
+    )
+    client._outgoing = outgoing
+    await client._handle_control({
+        "type": "ptt_ended", "burst_id": BURST_ID, "state": "draining",
+        "reason": "lease_expired", "final_next_sequence": None,
+    })
+    assert outgoing.stop_reason == "lease_expired"
+    assert outgoing.released_without_final
+    await client._handle_control({
+        "type": "ptt_ended", "burst_id": BURST_ID, "state": "sealed",
+        "reason": "complete", "final_next_sequence": 2,
+    })
+    assert await client._finish_outgoing(outgoing, 5) == SendResult(
+        "interrupted", "lease_expired", BURST_ID
+    )
 
 
 @pytest.mark.asyncio
@@ -576,7 +599,7 @@ async def test_ack_while_waiting_for_write_lock_skips_stale_packet() -> None:
     context = client._attach_transport(socket)
     client._ready.set()
     outgoing = _Outgoing(
-        "request", 0, burst_id=BURST_ID, phase="transmitting", started_at=time.monotonic()
+        "request", 0, burst_id=BURST_ID, phase="finalizing", started_at=time.monotonic()
     )
     outgoing.retained = {0: b"zero", 1: b"one"}
     outgoing.next_sequence = 2
@@ -612,7 +635,7 @@ async def test_retention_expiry_while_waiting_for_lock_skips_packet() -> None:
     context = client._attach_transport(socket)
     client._ready.set()
     outgoing = _Outgoing(
-        "request", 0, burst_id=BURST_ID, phase="transmitting", started_at=0
+        "request", 0, burst_id=BURST_ID, phase="finalizing", started_at=0
     )
     outgoing.retained = {0: b"expired", 1: b"current"}
     outgoing.next_sequence = 2
@@ -907,11 +930,11 @@ async def test_finalization_refreshes_deadline_while_uploading_retained_packets(
     outgoing.retained = {sequence: bytes([sequence]) for sequence in range(10)}
     outgoing.next_sequence = 10
     client._outgoing = outgoing
-    writes: list[tuple[int, float]] = []
+    writes: list[tuple[int, int, float]] = []
 
     async def send_bytes(raw, **_kwargs):
-        _, sequence, _ = decode_media(raw, 1)
-        writes.append((sequence, clock.now()))
+        _, sequence, packets = decode_media(raw, 1)
+        writes.append((sequence, len(packets), clock.now()))
         clock.value += 0.9
         if sequence == 0:
             client._freeze_outgoing(outgoing)
@@ -921,8 +944,177 @@ async def test_finalization_refreshes_deadline_while_uploading_retained_packets(
     await client._upload_retained(outgoing)
 
     assert outgoing.finalization_deadline == pytest.approx(6.9)
-    assert all(started < outgoing.finalization_deadline for _, started in writes)
-    assert [sequence for sequence, _ in writes] == list(range(8))
+    assert all(started < outgoing.finalization_deadline for _, _, started in writes)
+    assert [sequence for first, count, _ in writes for sequence in range(first, first + count)] == list(range(10))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frame_count", [1, 2, 3, 4])
+async def test_fresh_audio_batches_and_flushes_short_tail(frame_count: int) -> None:
+    class Socket:
+        transport = None
+
+        def __init__(self) -> None:
+            self.messages: list[bytes] = []
+
+        async def send(self, message: bytes) -> None:
+            self.messages.append(message)
+
+    clock = ManualClock()
+    client = HeadlessClient(ClientConfig("ws://test"))
+    client._now = clock.now
+    socket = Socket()
+    client._attach_transport(socket)
+    client._ready.set()
+    outgoing = _Outgoing("request", 0, burst_id=BURST_ID, phase="transmitting", started_at=0)
+    outgoing.retained = {sequence: bytes([sequence]) for sequence in range(frame_count)}
+    outgoing.next_sequence = frame_count
+    client._outgoing = outgoing
+
+    clock.value = (frame_count - 1) * 0.02
+    await client._upload_retained(outgoing)
+    assert [len(decode_media(raw, 1)[2]) for raw in socket.messages] == (
+        [3] if frame_count >= 3 else []
+    )
+
+    client._freeze_outgoing(outgoing)
+    await client._upload_retained(outgoing)
+    frames = [
+        (first + offset, packet)
+        for raw in socket.messages
+        for _, first, packets in [decode_media(raw, 1)]
+        for offset, packet in enumerate(packets)
+    ]
+    assert frames == [(sequence, bytes([sequence])) for sequence in range(frame_count)]
+    assert all(len(raw) <= 4096 for raw in socket.messages)
+
+
+@pytest.mark.asyncio
+async def test_fresh_audio_partial_batch_flushes_after_40_ms() -> None:
+    class Socket:
+        transport = None
+
+        def __init__(self) -> None:
+            self.messages: list[bytes] = []
+
+        async def send(self, message: bytes) -> None:
+            self.messages.append(message)
+
+    clock = ManualClock()
+    client = HeadlessClient(ClientConfig("ws://test"))
+    client._now = clock.now
+    socket = Socket()
+    client._attach_transport(socket)
+    client._ready.set()
+    outgoing = _Outgoing("request", 0, burst_id=BURST_ID, phase="transmitting", started_at=0)
+    outgoing.retained = {0: b"first", 1: b"second"}
+    outgoing.ready_at = {0: 0.1, 1: 0.12}
+    outgoing.next_sequence = 2
+    client._outgoing = outgoing
+
+    clock.value = 0.139
+    await client._upload_retained(outgoing)
+    assert socket.messages == []
+    clock.value = 0.14
+    await client._upload_retained(outgoing)
+    assert decode_media(socket.messages[0], 1)[2] == (b"first", b"second")
+
+
+@pytest.mark.asyncio
+async def test_replay_batches_without_waiting_and_respects_message_limit() -> None:
+    class Socket:
+        transport = None
+
+        def __init__(self) -> None:
+            self.messages: list[bytes] = []
+
+        async def send(self, message: bytes) -> None:
+            self.messages.append(message)
+
+    clock = ManualClock()
+    client = HeadlessClient(ClientConfig("ws://test"))
+    client._now = clock.now
+    client._snapshot = {"audio_policy": {"recovery_horizon_ms": 5_000}}
+    client._attach_transport(object())
+    socket = Socket()
+    client._attach_transport(socket)
+    client._ready.set()
+    outgoing = _Outgoing("request", 0, burst_id=BURST_ID, phase="transmitting", started_at=0)
+    outgoing.retained = {sequence: bytes(1_275) for sequence in range(7)}
+    outgoing.next_sequence = 7
+    outgoing.sent_transport = 1
+    client._outgoing = outgoing
+
+    await client._upload_retained(outgoing)
+    assert [len(decode_media(raw, 1)[2]) for raw in socket.messages] == [3, 3, 1]
+    assert all(len(raw) <= 4096 for raw in socket.messages)
+    assert outgoing.sent_sequences == set(range(7))
+
+
+@pytest.mark.asyncio
+async def test_new_speech_after_replay_uses_fresh_batch_deadline() -> None:
+    class Socket:
+        transport = None
+
+        def __init__(self) -> None:
+            self.messages: list[bytes] = []
+
+        async def send(self, message: bytes) -> None:
+            self.messages.append(message)
+
+    clock = ManualClock()
+    client = HeadlessClient(ClientConfig("ws://test"))
+    client._now = clock.now
+    client._snapshot = {"audio_policy": {"recovery_horizon_ms": 5_000}}
+    client._attach_transport(object())
+    socket = Socket()
+    client._attach_transport(socket)
+    client._ready.set()
+    outgoing = _Outgoing("request", 0, burst_id=BURST_ID,
+                         phase="transmitting", started_at=0)
+    outgoing.retained = {sequence: b"old" for sequence in range(4)}
+    outgoing.next_sequence = 4
+    outgoing.sent_transport = 1
+    client._outgoing = outgoing
+
+    await client._upload_retained(outgoing)
+    assert [len(decode_media(raw, 1)[2]) for raw in socket.messages] == [4]
+    outgoing.retained[4] = b"new"
+    outgoing.ready_at[4] = clock.now()
+    outgoing.next_sequence = 5
+    await client._upload_retained(outgoing)
+    assert len(socket.messages) == 1
+    clock.value = 0.04
+    await client._upload_retained(outgoing)
+    assert [len(decode_media(raw, 1)[2]) for raw in socket.messages] == [4, 1]
+
+
+@pytest.mark.asyncio
+async def test_batch_upload_stops_when_another_burst_replaces_it() -> None:
+    client = HeadlessClient(ClientConfig("ws://test"))
+    client._ready.set()
+    client._attach_transport(object())
+    outgoing = _Outgoing(
+        "request", 0, burst_id=BURST_ID, phase="finalizing", started_at=time.monotonic(),
+    )
+    outgoing.retained = {sequence: bytes([sequence]) for sequence in range(4)}
+    outgoing.next_sequence = outgoing.final_next_sequence = 4
+    client._outgoing = outgoing
+    writes = []
+
+    async def send_bytes(raw, **_kwargs):
+        writes.append(decode_media(raw, 1))
+        client._outgoing = _Outgoing(
+            "next", 0, burst_id="22222222-2222-4222-8222-222222222222",
+        )
+        return True
+
+    client._send_bytes = send_bytes
+    await client._upload_retained(outgoing)
+
+    assert [(burst, first, len(packets)) for burst, first, packets in writes] == [
+        (BURST_ID, 0, 3),
+    ]
 
 
 @pytest.mark.asyncio

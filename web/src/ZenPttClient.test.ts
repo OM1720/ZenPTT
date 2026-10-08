@@ -270,7 +270,29 @@ describe('session ownership', () => {
     grant(socket, id)
     expect(audio.startCapture).toHaveBeenCalledExactlyOnceWith(id)
     audioEvents.packet(id, new Uint8Array([1, 2]))
+    expect(socket.binary).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(40)
     expect(decodeMedia(new Uint8Array(socket.binary[0]!), UPLINK)).toMatchObject({ burstId, firstSequence: 0 })
+  })
+  it('groups three fresh frames and flushes a smaller group after 40 ms from its first frame', async () => {
+    const socket = await join()
+    await client.enableAudio()
+    const id = request(socket)
+    grant(socket, id)
+    audioEvents.packet(id, new Uint8Array([1]))
+    await vi.advanceTimersByTimeAsync(20)
+    audioEvents.packet(id, new Uint8Array([2]))
+    expect(socket.binary).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(20)
+    expect(decodeMedia(new Uint8Array(socket.binary[0]!), UPLINK).packets).toEqual([
+      new Uint8Array([1]), new Uint8Array([2]),
+    ])
+    audioEvents.packet(id, new Uint8Array([3]))
+    audioEvents.packet(id, new Uint8Array([4]))
+    audioEvents.packet(id, new Uint8Array([5]))
+    expect(decodeMedia(new Uint8Array(socket.binary[1]!), UPLINK)).toEqual({
+      burstId, firstSequence: 2, packets: [new Uint8Array([3]), new Uint8Array([4]), new Uint8Array([5])],
+    })
   })
   it('ends at the flushed exclusive watermark and permits a new request', async () => {
     const socket = await join()
@@ -283,6 +305,9 @@ describe('session ownership', () => {
     expect(socket.sent.some(raw => raw.includes('burst_end'))).toBe(false)
     audioEvents.packet(id, new Uint8Array([2]))
     audioEvents.captureEnded(id)
+    expect(decodeMedia(new Uint8Array(socket.binary[0]!), UPLINK).packets).toEqual([
+      new Uint8Array([1]), new Uint8Array([2]),
+    ])
     expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ type: 'burst_end', burst_id: burstId, final_next_sequence: 2 })
     socket.receive(JSON.stringify({ type: 'ptt_ended', burst_id: burstId, burst_index: 0, state: 'sealed', final_next_sequence: 2, reason: 'complete' }))
     expect(client.getState().ptt).toBe('idle')
@@ -297,6 +322,21 @@ describe('session ownership', () => {
     expect(audio.startCapture).not.toHaveBeenCalled()
     expect(socket.sent.at(-1)).toBe(JSON.stringify({ type: 'ptt_cancel', request_id: id }))
     expect(client.getState().ptt).toBe('idle')
+  })
+  it('reports a sealed shorter prefix as interrupted even when the server says complete', async () => {
+    const socket = await join()
+    await client.enableAudio()
+    const id = request(socket)
+    grant(socket, id)
+    for (const value of [1, 2, 3]) audioEvents.packet(id, new Uint8Array([value]))
+    audioEvents.packet(id, new Uint8Array([4]))
+    client.pttUp()
+    audioEvents.captureEnded(id)
+    socket.receive(JSON.stringify({ type: 'ptt_ended', burst_id: burstId, burst_index: 0,
+      state: 'sealed', final_next_sequence: 3, reason: 'complete' }))
+    expect(client.getState().ptt).toBe('idle')
+    expect(client.getState().error).toContain('before all captured audio')
+    expect(audio.cue).toHaveBeenCalledWith('interrupted')
   })
   it('handles refusal and request timeout without capture', async () => {
     const socket = await join()
@@ -432,6 +472,8 @@ describe('session ownership', () => {
     const current = await resume(old, true)
     expect(old.closeCodes).toEqual([4000])
     expect(decodeMedia(new Uint8Array(current.binary[0]!), UPLINK)).toEqual({ burstId, firstSequence: 1, packets: [new Uint8Array([3, 4])] })
+    await vi.advanceTimersByTimeAsync(40)
+    expect(current.binary).toHaveLength(1)
     expect(audio.startCapture).toHaveBeenCalledOnce()
     expect(audio.dispose).not.toHaveBeenCalled()
     expect(client.getState().status).toBe('connected')

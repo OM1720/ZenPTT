@@ -1,0 +1,16 @@
+{
+  "name": "LibriSpeech ASR dummy dev-clean speech",
+  "source": "LibriSpeech ASR corpus (OpenSLR SLR12)",
+  "source_url": "https://www.openslr.org/12/",
+  "license": "CC BY 4.0",
+  "archive_url": "https://s3.amazonaws.com/datasets.huggingface.co/librispeech_asr/2.1.0/dev_clean.tar.gz",
+  "archive_sha256": "663413297096f851df4ec4023fafbf7e2c6b3eccbed364741a82e457792be7de",
+  "files": [
+    "dev_clean/1272/128104/1272-128104-0000.flac",
+    "dev_clean/1272/128104/1272-128104-0001.flac",
+    "dev_clean/1272/128104/1272-128104-0002.flac",
+    "dev_clean/1272/128104/1272-128104-0003.flac",
+    "dev_clean/1272/128104/1272-128104-0004.flac"
+  ],
+  "attribution": "Panayotov, Chen, Povey, and Khudanpur, LibriSpeech: an ASR corpus based on public domain audio books (ICASSP 2015)."
+}

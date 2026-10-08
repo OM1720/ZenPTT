@@ -19,7 +19,7 @@ try {
     $env:PYTHONPATH = Join-Path $repoRoot "headless/src"
     try {
         & $python scripts/run-bounded.py 120 $python -m pytest `
-            headless/tests examples/qrz_bot/tests -q -p no:cov
+            headless/tests examples/qrz_bot/tests scripts/poor-link -q -p no:cov
         if ($LASTEXITCODE -ne 0) { throw "Headless tests failed" }
         & $python scripts/run-bounded.py 120 $python -m ruff check `
             headless/src headless/tests examples/qrz_bot `
@@ -27,7 +27,7 @@ try {
             scripts/headless-tail-handler.py scripts/test-headless-live.py `
             scripts/test-headless-contract.py `
             scripts/test-headless-audio.py `
-            scripts/test-headless-signal.py scripts/run-bounded.py
+            scripts/test-headless-signal.py scripts/run-bounded.py scripts/poor-link
         if ($LASTEXITCODE -ne 0) { throw "Headless Ruff failed" }
         & (Join-Path $PSScriptRoot "test-headless-live.ps1") -CheckMetadataOnly
     } finally {

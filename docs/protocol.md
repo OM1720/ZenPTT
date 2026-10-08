@@ -196,6 +196,9 @@ after explicit end, cancellation, lease expiry, or the duration limit:
 integer when known and `null` when the floor ended before the sender declared a
 watermark. Reasons visible here are `released`, `complete`, `expired`,
 `canceled`, `lease_expired`, or `duration_limit`.
+The sender compares a sealed final sequence with its own captured frame count.
+`complete` with a shorter server prefix is an interrupted transmission, not
+confirmation that all captured speech arrived.
 
 Accepted audio renews the floor lease, but recovery never extends it. Explicit
 release, cancel, lease expiry, or the 60-second burst limit frees the floor.
@@ -239,6 +242,14 @@ All multibyte integers use network byte order (big-endian). The fixed header is
 The header is followed by one entry per packet: an unsigned 16-bit packet
 length and exactly that many Opus bytes. Each packet represents one 20 ms frame,
 and packets in an envelope occupy consecutive sequence positions.
+
+The current Android, browser, and headless senders group up to three fresh
+frames per envelope. A partial group waits at most 40 ms from its first ready
+frame; capture stop flushes the tail before `burst_end`. Recovery sends retained
+consecutive frames without this wait. The wire limits below and the server's
+per-frame cumulative ACK behavior are unchanged.
+The measured basis and remaining playback limitations are recorded in the dated
+[`poor-link study`](research/poor-link-2026-10-07.md).
 
 | Limit | Value |
 |---|---:|

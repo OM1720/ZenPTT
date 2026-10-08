@@ -141,16 +141,18 @@ test('a resumed listener does not render queued frames twice', async ({ context 
 })
 
 test('an outage beyond capture horizon requires a new physical press', async ({ page }) => {
+  test.setTimeout(45000)
   const fault = await faults(page, 'ack', 6000)
   await join(page, `HORIZON.${crypto.randomUUID().replaceAll('-', '').toUpperCase()}`)
   await press(page)
   await expect.poll(fault.cutDone).toBe(true)
-  await expect(page.getByRole('button', { name: 'Push to talk' })).toHaveText('Push to talk', { timeout: 14000 })
+  await expect(page.getByRole('button', { name: 'Push to talk' })).toHaveText('Push to talk', { timeout: 20000 })
   await expect(page.getByRole('status', { name: 'Connection status' })).toContainText('Connected')
   expect(fault.resumes()).toBe(1)
   await page.keyboard.up('Space')
   await press(page)
-  await release(page)
+  await page.keyboard.up('Space')
+  await expect(page.getByRole('button', { name: 'Push to talk' })).toHaveText('Push to talk', { timeout: 10000 })
   await page.getByRole('button', { name: 'Disconnect' }).click()
 })
 

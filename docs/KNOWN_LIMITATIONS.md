@@ -72,6 +72,12 @@ intentional constraint is accepted.
   available RAM. A larger horizon preserves more speech but deliberately
   increases head-of-line blocking and audible queue delay. Playback stays 1x,
   so a backlog cannot be skipped or caught up by time compression.
+- Even when every audio frame reaches the browser, jitter can empty its playback
+  queue and insert short silence. A longer startup buffer reduced measured
+  stalls but also delayed speech onset; no new permanent buffer was selected.
+  The two-second floor renewal lease favors quicker channel release over keeping
+  a burst alive through longer sender blackouts. See the dated
+  [`poor-link study`](research/poor-link-2026-10-07.md).
 - Control and audio share one ordered WebSocket/TCP stream. Head-of-line
   blocking can delay PTT release until `burst_end` arrives or the lease expires.
   A server writer blocked for ten seconds closes that socket and relies on

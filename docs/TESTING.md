@@ -38,6 +38,197 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -e ".\headless[dev]"
 ```
 
+The headless gate also runs the offline poor-link analyzer tests and Ruff over
+`scripts/poor-link`. The network experiment below is manual and never runs in CI.
+The selected transport behavior and dated comparison results are in the
+[`poor-link study`](research/poor-link-2026-10-07.md).
+
+## Poor-link measurement battery
+
+The standalone battery runs two headless Linux containers built from the current
+checkout against the existing test host. It does not change server configuration
+or application versions. Docker Engine, `plink` with a loaded Pageant key, and
+the project `.venv` are required. The test containers need Docker `NET_ADMIN`;
+the traffic controls affect only those containers.
+
+Create ignored `private/poor-link-ssh.json` locally:
+
+```json
+{
+  "host": "test-host.example.net",
+  "user": "test-operator",
+  "host_key": "SHA256:replace-with-verified-fingerprint",
+  "runtime_path": "/opt/zenptt/runtime",
+  "server_url": "wss://test.example.net/ws"
+}
+```
+
+Use the actual pinned SSH host key and the runtime directory for the existing
+stand. The SSH account must read `docker compose logs` there. The public script
+contains no operator address, account, or key. For a short control run:
+
+```powershell
+.\scripts\test-poor-link.ps1 -Profiles baseline -Repeats 1
+```
+
+For the full sequential matrix (12 profiles, three repeats and both directions):
+
+```powershell
+.\scripts\test-poor-link.ps1
+```
+
+`-Profiles`, `-Repeats`, `-ServerUrl`, `-SshConfigPath`, and `-OutputDirectory`
+select a subset or override local settings. Each case uses a separate channel.
+Quote multiple profile names, for example `-Profiles 'sender-24,listener-24'`.
+The first run downloads and verifies the pinned LibriSpeech speech archive and
+prepares the first 60 seconds with Linux FFmpeg. The archive is from
+[OpenSLR SLR12](https://www.openslr.org/12/) under CC BY 4.0; source URL,
+SHA-256, file selection, and attribution are in `scripts/poor-link/audio-source.json`.
+Audio remains in ignored `acceptance/artifacts/poor-link/audio-cache`.
+
+The default run applies sender egress shaping at 24/32/48 kbit/s with
+200 ± 50 ms delay, listener ingress policing at the same rates, unstable
+200 ± 100 ms with 1% loss, and sender or listener blackouts. Three fixed seeds
+are used. Each case sends three 20-second speech bursts two seconds apart;
+the blackout starts five seconds after the second grant. The sender does not
+wait for receipt before the next burst. The receiver has up to 30 seconds
+after the sender completes. The host is checked before and after the run.
+
+Each timestamped result directory contains `source.json`, `results.json`,
+`report.md`, and separate case folders with settings, bot stdout/stderr,
+received PCM, `tc` counters, SSH server logs, and analysis. `complete` in a
+protocol event does not establish full delivery: the report compares decoded
+frames with all 1,000 planned frames per burst. Cases with missing or invalid
+evidence are `test_system_error`; speech loss on an impaired link is
+`measured_degradation`. Results are measurements without a preset quality
+threshold. Initial server sessions are matched by the case channel. Resumed
+sessions are correlated with a unique bot reconnection within one second;
+`resume_correlations` preserves timestamps, role, and transport count. This
+is time correlation because server resume events omit the channel identifier.
+Ambiguous matches are excluded. Backlog counts represent queue-limit events,
+not lost frames or distinct incidents. On normal
+interruption, the wrapper preserves available bot logs and `tc` statistics,
+marks the unfinished case, and removes only containers named in that run.
+
+New server runs also report completed `outbound_backpressure` intervals with
+duration, blocked-offer count, peak queued bytes, and recovery status. Legacy
+`outbound_backlog_limit` events remain readable in saved older runs. An interval
+does not itself indicate dropped audio. An unmatched final sequence after a
+forced release is diagnostic evidence; classify missing planned speech as
+measured degradation unless a separate protocol violation is established.
+
+For a diagnostic bandwidth sweep, opt-in profiles add sender shaping at
+64/80/96 kbit/s, listener policing at those rates, and listener ingress shaping
+through an IFB interface at 48/64/80/96 kbit/s. The default matrix is unchanged.
+Fractional sender outages `sender-blackout-1.25`, `sender-blackout-1.5`, and
+`sender-blackout-1.75` bracket the two-second renewal lease. For example:
+
+```powershell
+.\scripts\test-poor-link.ps1 -Profiles 'sender-64,listener-shaped-64,sender-blackout-1.5' -Repeats 3
+```
+
+The probe logs sanitized outgoing controls, completed local socket sends,
+sender terminal decisions, retention expiry, negotiated audio policy, and
+one-second Linux interface counters. Socket-send completion establishes local
+enqueue only. It does not prove server receipt. Interface counters include
+protocol overhead and retransmissions. ACK resolves both stored and lost
+positions, so an ACK watermark alone does not establish delivered speech.
+
+Analyze saved experiments without contacting the stand:
+
+```powershell
+.venv\Scripts\python.exe scripts/poor-link/investigate.py `
+  acceptance/artifacts/poor-link/<run-id>/results.json `
+  --output acceptance/artifacts/poor-link/<investigation-id>
+```
+
+Supply multiple result files to combine runs. The investigation preserves raw
+terminal evidence, per-second traffic, backlog timing, and profile comparisons.
+Older probes have no local-final or socket-send evidence; missing measurements
+remain explicit. Reported full-burst end delay excludes truncated bursts.
+
+For the fixed R/A/B/AB experiment, run the same 17-profile matrix against each
+saved server bundle and compare the four result directories offline:
+
+```powershell
+.venv\Scripts\python.exe scripts/poor-link/compare.py `
+  --r acceptance/artifacts/poor-link/<r-run> `
+  --a acceptance/artifacts/poor-link/<a-run> `
+  --b acceptance/artifacts/poor-link/<b-run> `
+  --ab acceptance/artifacts/poor-link/<ab-run> `
+  --output-dir acceptance/artifacts/poor-link/<comparison-id>
+```
+
+The comparison writes `comparison.json` and `comparison.md`. It reads saved
+bot events to distinguish media messages from frames and includes sampled
+interface byte counts. Each new `source.json` records server source hashes,
+the SHA-256 of the delivery ZIP installed on the test host at run start, and
+an HTTP Date clock-offset estimate with uncertainty for server/client timing.
+
+For the separate three-party lease experiment, install a saved AB package with
+one fixed renewal lease, then pass that exact package directory to the runner.
+It verifies that the installed ZIP and declared lease match before starting.
+Each case records sender, receiver, and contender logs, the sender's actual
+network outage counters, server logs, and contender request/grant times:
+
+```powershell
+.\scripts\test-poor-link-lease.ps1 -PackageDirectory <saved-package-dir> -LeaseSeconds 2
+```
+
+Repeat after installing the 3- and 4-second packages. Compare the three saved
+outage runs offline with `scripts/poor-link/compare_lease.py --lease-2 <run>
+--lease-3 <run> --lease-4 <run> --output-dir <ignored-report-dir>`.
+Disappearance, voluntary release, and cancellation can be run separately with
+`-Modes 'disappear,voluntary,cancel'`. These network commands are never part of CI.
+
+## Browser audio through isolated network proxies
+
+The browser proxy experiment runs the real AudioWorklet and Opus path in two
+Chromium clients. Each client connects through its own temporary Linux Caddy
+container. Traffic control is confined to a proxy container; this changes the
+TCP path, so its measurements are separate from the direct bot/server matrix.
+The test host keeps its installed package. Run a baseline first, using the
+SHA-256 of the package currently installed on the host:
+
+```powershell
+.venv\Scripts\python.exe scripts/poor-link/client_proxy.py `
+  --expected-bundle <installed-zip-sha256> `
+  --package-zip <saved-zenptt-server.zip> --profile baseline
+```
+
+Select `egress-32`, `egress-48`, `egress-64`, `ingress-police-48`, or `unstable`
+with `--profile`; `--impaired A` or `--impaired B` chooses the constrained proxy.
+The default addresses come from the ignored `private/poor-link-ssh.json`.
+With `--package-zip`, the runner verifies that the local `web/dist` bytes match
+the selected installed package before opening the browser.
+The runner checks host health and the installed ZIP, captures both browser
+directions, `tc` counters, proxy logs, and server logs, then removes its own
+containers. Each invocation writes an ignored timestamped result directory
+under `acceptance/artifacts/poor-link/`. A failed browser run or missing
+measurement evidence returns a nonzero status while preserving the artifacts.
+The proxy profiles are manual and never run in the ordinary CI gate.
+
+For browser playback-stall diagnosis, use the same package with
+`--target-frames 400 --diagnose-audio --seed 1009` (then seeds `2017` and
+`3037`). Repeat `baseline` and `unstable` with `--prebuffer-ms 0`, `50`, and
+`100`, always using a distinct ignored `--output` directory. This extra
+prebuffer is a test-only delay before the first frame commands reach the
+unchanged AudioWorklet; it is not a server or client setting. Each result saves
+frame timing, queue-block events, raw float32 PCM, and observer callback gaps.
+Use `--lightweight-observer` with `--prebuffer-ms 0` to repeat baseline and
+unstable without the ScriptProcessorNode PCM tap. This mode retains worklet
+queue events but does not save PCM. Analyze the complete matrix with:
+
+```powershell
+.venv\Scripts\python.exe scripts/poor-link/analyze_browser_stall.py `
+  --runs <ignored-matrix-dir> --lightweight-runs <ignored-lightweight-dir> `
+  --expected-bundle <installed-zip-sha256>
+```
+
+The analyzer requires all 18 full-observer cases and six lightweight cases,
+checks individual frame identities, and lists incomplete attempts separately.
+Browser PCM duration errors alone are not evidence of network frame loss.
+
 ## Full local gate
 
 Run the normal bounded gate from the repository root:

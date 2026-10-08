@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import Any
 
 import pytest
@@ -100,6 +101,23 @@ async def test_in_flight_bytes_remain_inside_the_socket_budget() -> None:
     finally:
         socket.release.set()
         await session.stop_outbound()
+
+
+def test_resumable_backpressure_is_one_completed_interval(caplog) -> None:
+    caplog.set_level(logging.INFO, logger="zenptt.server")
+    clock = [100]
+    session = ClientSession(FakeWebSocket(), max_outbound_bytes=5, now_ms=lambda: clock[0])
+    assert session.offer_resumable_bytes(b"12345")
+    assert not session.offer_resumable_bytes(b"x")
+    clock[0] = 120
+    assert not session.offer_resumable_bytes(b"x")
+    session.outbound_queue.clear()
+    session.queued_bytes = 0
+    clock[0] = 150
+    assert session.offer_resumable_bytes(b"x")
+    assert "outbound_backpressure" in caplog.text
+    assert "duration_ms=50 blocked_offers=2 peak_queued_bytes=5 recovered=true" in caplog.text
+    assert "outbound_backlog_limit" not in caplog.text
 
 
 @pytest.mark.asyncio

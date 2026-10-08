@@ -46,16 +46,16 @@ export class UplinkBuffer {
   rewind() { this.sendCursor = this.acknowledged }
   end() { this.finalSequence ??= this.nextSequence }
 
-  envelope(): { bytes: Uint8Array; next: number } | null {
+  envelope(maxPackets = MAX_PACKETS): { bytes: Uint8Array; next: number; count: number } | null {
     const packets: Uint8Array[] = []
     let first = -1, size = 24
     for (const [sequence, packet] of this.packets) {
       if (sequence < Math.max(this.sendCursor, this.acknowledged)) continue
       if (first < 0) first = sequence
-      if (sequence !== first + packets.length || packets.length === MAX_PACKETS || size + packet.length + 2 > MAX_MESSAGE_BYTES) break
+      if (sequence !== first + packets.length || packets.length === maxPackets || size + packet.length + 2 > MAX_MESSAGE_BYTES) break
       packets.push(packet)
       size += packet.length + 2
     }
-    return first < 0 ? null : { bytes: encodeMedia(UPLINK, { burstId: this.burstId, firstSequence: first, packets }), next: first + packets.length }
+    return first < 0 ? null : { bytes: encodeMedia(UPLINK, { burstId: this.burstId, firstSequence: first, packets }), next: first + packets.length, count: packets.length }
   }
 }

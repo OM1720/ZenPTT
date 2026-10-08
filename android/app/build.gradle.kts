@@ -48,8 +48,8 @@ android {
         applicationId = "app.zenptt"
         minSdk = 31
         targetSdk = 35
-        versionCode = 114
-        versionName = "0.14.3"
+        versionCode = 115
+        versionName = "0.14.4"
         buildConfigField("String", "DEFAULT_SERVER_ADDRESS", "\"wss://$serverDomain\"")
         buildConfigField("String", "LEGACY_SERVER_ADDRESS", "\"$legacyServerAddress\"")
         buildConfigField("String", "PRE_SNAPSHOT_SERVER_ADDRESS", "\"$preSnapshotServerAddress\"")

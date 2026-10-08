@@ -78,12 +78,15 @@ internal class OutgoingBurst(
         }
     }
 
-    fun rangeForGeneration(generation: Long): List<OutgoingAudioFrame> {
+    fun rangeForGeneration(
+        generation: Long,
+        maxFrames: Int = AudioFrameCodec.MAX_FRAMES_PER_MESSAGE,
+    ): List<OutgoingAudioFrame> {
         val first = frames.values.firstOrNull { it.sentGeneration != generation } ?: return emptyList()
         val result = mutableListOf(first)
         var messageBytes = AudioFrameCodec.HEADER_SIZE + Short.SIZE_BYTES + first.packet.size
         var sequence = first.sequence + 1
-        while (result.size < AudioFrameCodec.MAX_FRAMES_PER_MESSAGE) {
+        while (result.size < maxFrames) {
             val frame = frames[sequence] ?: break
             if (frame.sentGeneration == generation) break
             if (!AudioFrameCodec.canAppendPacket(messageBytes, result.size, frame.packet)) break
@@ -167,10 +170,14 @@ internal class OutgoingAudioStore(
         bursts[burstId]?.endSentGeneration = generation
     }
 
-    fun nextRange(nowMs: Long, generation: Long): OutgoingRange? {
+    fun nextRange(
+        nowMs: Long,
+        generation: Long,
+        maxFrames: Int = AudioFrameCodec.MAX_FRAMES_PER_MESSAGE,
+    ): OutgoingRange? {
         expire(nowMs)
         bursts.values.forEach { burst ->
-            val frames = burst.rangeForGeneration(generation)
+            val frames = burst.rangeForGeneration(generation, maxFrames)
             if (frames.isNotEmpty()) {
                 return OutgoingRange(
                     burst.burstId,
@@ -187,7 +194,7 @@ internal class OutgoingAudioStore(
 
     fun markRangeSent(range: OutgoingRange, generation: Long, nowMs: Long) {
         val burst = bursts[range.burstId] ?: return
-        val frames = burst.rangeForGeneration(generation)
+        val frames = burst.rangeForGeneration(generation, range.packets.size)
             .takeIf { it.firstOrNull()?.sequence == range.firstSequence } ?: return
         if (frames.size != range.packets.size) return
         retransmittedFrameCount += frames.count {

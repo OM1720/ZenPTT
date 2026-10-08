@@ -888,7 +888,7 @@ class ChannelViewModelTest {
         viewModel.pttDown()
         viewModel.onControl(ControlEvent.PttGranted("request-1", OLD_BURST, 0, 2_000))
         assertTrue(audio.send(byteArrayOf(7)))
-        assertEquals(1, connection.audioMessages.size)
+        awaitCondition { connection.audioMessages.size == 1 }
 
         now = 2_999
         Thread.sleep(100)
@@ -922,6 +922,83 @@ class ChannelViewModelTest {
         assertEquals(listOf(0L, 0L), envelopes.map { it.firstSequence })
         assertEquals(listOf(byteArrayOf(7).toList(), byteArrayOf(7).toList()),
             envelopes.map { it.opusPackets.single().toList() })
+        viewModel.close()
+    }
+
+    @Test
+    fun freshAudioGroupsThreeFramesAndFlushesTheTailAtFortyMillisecondsOrStop() {
+        var now = 0L
+        val connection = FakeConnection()
+        val audio = RecordingCaptureAudio()
+        val viewModel = ChannelViewModel(
+            FakeStore(DEFAULT_SERVER_ADDRESS), connection, audio = audio,
+            ptt = PttSession { "request-1" }, diagnostics = Diagnostics { now }, nowMs = { now },
+        )
+        viewModel.setChannelCode("ROOM1")
+        viewModel.connect()
+        viewModel.onControl(testSnapshot("ROOM1", 1))
+        viewModel.pttDown()
+        viewModel.onControl(ControlEvent.PttGranted("request-1", OLD_BURST, 0, 2_000))
+
+        assertTrue(audio.send(byteArrayOf(1)))
+        now = 20
+        assertTrue(audio.send(byteArrayOf(2)))
+        assertTrue(connection.audioMessages.isEmpty())
+        now = 39
+        viewModel.runSchedulerTickForTest()
+        assertTrue(connection.audioMessages.isEmpty())
+        now = 40
+        viewModel.runSchedulerTickForTest()
+        assertEquals(1, connection.audioMessages.size)
+        assertEquals(2, AudioFrameCodec.decode(connection.audioMessages[0], MediaDirection.Uplink).opusPackets.size)
+
+        now = 60
+        assertTrue(audio.send(byteArrayOf(3)))
+        now = 80
+        assertTrue(audio.send(byteArrayOf(4)))
+        now = 100
+        assertTrue(audio.send(byteArrayOf(5)))
+        assertEquals(2, connection.audioMessages.size)
+        val group = AudioFrameCodec.decode(connection.audioMessages[1], MediaDirection.Uplink)
+        assertEquals(2L, group.firstSequence)
+        assertEquals(3, group.opusPackets.size)
+
+        now = 120
+        assertTrue(audio.send(byteArrayOf(6)))
+        viewModel.pttUp()
+        awaitCondition { connection.finishedBursts.contains(OLD_BURST to 6L) }
+        assertEquals(3, connection.audioMessages.size)
+        val tail = AudioFrameCodec.decode(connection.audioMessages[2], MediaDirection.Uplink)
+        assertEquals(5L, tail.firstSequence)
+        assertEquals(1, tail.opusPackets.size)
+        viewModel.close()
+    }
+
+    @Test
+    fun sealedShorterPrefixReportsInterruptedAfterTheOutgoingFramesWereCleared() {
+        var now = 0L
+        val connection = FakeConnection()
+        val audio = RecordingCaptureAudio()
+        val viewModel = ChannelViewModel(
+            FakeStore(DEFAULT_SERVER_ADDRESS), connection, audio = audio,
+            ptt = PttSession { "request-1" }, diagnostics = Diagnostics { now }, nowMs = { now },
+        )
+        viewModel.setChannelCode("ROOM1")
+        viewModel.connect()
+        viewModel.onControl(testSnapshot("ROOM1", 1))
+        viewModel.pttDown()
+        viewModel.onControl(ControlEvent.PttGranted("request-1", OLD_BURST, 0, 2_000))
+        repeat(3) { assertTrue(audio.send(byteArrayOf(it.toByte()))) }
+        viewModel.pttUp()
+        awaitCondition { connection.finishedBursts.contains(OLD_BURST to 3L) }
+
+        viewModel.onControl(ControlEvent.PttEnded(OLD_BURST, 0, "draining", "lease_expired", null))
+        viewModel.onControl(ControlEvent.UplinkAck(OLD_BURST, 2))
+        now = 6_000
+        viewModel.runSchedulerTickForTest()
+        viewModel.onControl(ControlEvent.PttEnded(OLD_BURST, 0, "sealed", "complete", 2))
+
+        assertEquals(1, audio.indicators.count { it == AudioIndicator.TransmissionInterrupted })
         viewModel.close()
     }
 
@@ -981,7 +1058,7 @@ class ChannelViewModelTest {
             now = sequence * 20L
             assertTrue(audio.send(packet))
         }
-        assertEquals(52, connection.audioMessages.size)
+        assertEquals(17, connection.audioMessages.size)
 
         viewModel.onControl(ControlEvent.UplinkAck(OLD_BURST, 50))
         viewModel.onReconnecting(1)
@@ -993,7 +1070,7 @@ class ChannelViewModelTest {
                 floor = FloorSnapshot(OLD_BURST, 0, owned = true),
             ),
         )
-        awaitCondition { connection.audioMessages.size == 53 }
+        awaitCondition { connection.audioMessages.size == 18 }
 
         val replay = AudioFrameCodec.decode(
             connection.audioMessages.last(),
@@ -1015,7 +1092,7 @@ class ChannelViewModelTest {
         )
         viewModel.pttUp()
         awaitCondition { connection.finishedBursts.contains(OLD_BURST to 52L) }
-        assertEquals(53, connection.audioMessages.size)
+        assertEquals(18, connection.audioMessages.size)
         viewModel.close()
     }
 
@@ -1439,8 +1516,10 @@ class ChannelViewModelTest {
         viewModel.pttDown()
         viewModel.onControl(ControlEvent.PttGranted("request-1", OLD_BURST, 0, 2_000))
         assertTrue(audio.send(byteArrayOf(7)))
+        assertTrue(audio.send(byteArrayOf(8)))
+        assertTrue(audio.send(byteArrayOf(9)))
 
-        viewModel.onControl(ControlEvent.AudioRejected(OLD_BURST, 0, 1, "payload_mismatch"))
+        viewModel.onControl(ControlEvent.AudioRejected(OLD_BURST, 0, 3, "payload_mismatch"))
         Thread.sleep(100)
 
         assertEquals(1, connection.connectCount)
