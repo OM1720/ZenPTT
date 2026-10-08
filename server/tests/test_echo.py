@@ -219,6 +219,10 @@ def test_echo_capacity_keeps_excess_users_pending() -> None:
                 assignment = receive_type(control, "assign")
                 second.send_json({"type": "join_echo"})
                 manager = app.state.session_manager
+                deadline = time.monotonic() + 1
+                while time.monotonic() < deadline:
+                    if client.get("/internal/echo/status").json()["pending"] == 1:
+                        break
                 assert len(manager.echo.assignments) == 1
                 assert len(manager.echo.pending) == 1
                 assert assignment["ticket"].encode() not in manager.echo.tickets
