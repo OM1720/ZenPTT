@@ -36,12 +36,14 @@ export type AudioCommand =
   | { type: 'reset'; epoch: number }
   | { type: 'limit'; frames: number }
 
-export type AudioReply =
+export type AudioReply = (
   | { type: 'quality'; lostFrames: number; blocked: boolean }
   | { type: 'ready' }
+  | { type: 'capture_started'; requestId: string }
   | { type: 'packet'; requestId: string; packet: Uint8Array }
   | { type: 'stopped'; requestId: string }
   | { type: 'capture_expired'; requestId: string }
   | { type: 'played'; cursor: PlaybackCursor; epoch: number; frame: boolean }
   | { type: 'playback'; active: boolean }
   | { type: 'error' }
+) & { renderFrame?: number; queuedFrames?: number; captureSequence?: number; captureFrames?: number; paddedSamples?: number }

@@ -451,6 +451,41 @@ describe('session ownership', () => {
     expect(audio.dispose).toHaveBeenCalledOnce()
   })
 
+  it('accepts a delayed stop once and ignores stale and duplicate confirmations', async () => {
+    const socket = await join()
+    await client.enableAudio()
+    const id = request(socket)
+    grant(socket, id)
+    audioEvents.packet(id, new Uint8Array([1]))
+    client.pttUp()
+    audioEvents.captureEnded('stale-request')
+    await vi.advanceTimersByTimeAsync(900)
+    expect(socket.sent.filter(raw => raw.includes('burst_end'))).toHaveLength(0)
+    audioEvents.captureEnded(id)
+    audioEvents.captureEnded(id)
+    audioEvents.packet(id, new Uint8Array([2]))
+    await vi.advanceTimersByTimeAsync(200)
+    expect(socket.sent.filter(raw => raw.includes('burst_end'))).toHaveLength(1)
+    expect(JSON.parse(socket.sent.find(raw => raw.includes('burst_end'))!)).toMatchObject({ final_next_sequence: 1 })
+    expect(client.getState().status).toBe('connected')
+  })
+
+  it('disposes capture on disconnect and ignores a late stop from the old audio session', async () => {
+    const socket = await join()
+    await client.enableAudio()
+    const id = request(socket)
+    grant(socket, id)
+    client.pttUp()
+    const previous = audioEvents
+    await client.disconnect()
+    const count = socket.sent.length
+    previous.captureEnded(id)
+    previous.packet(id, new Uint8Array([1]))
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(client.getState()).toMatchObject({ status: 'offline', audio: 'off' })
+    expect(socket.sent).toHaveLength(count)
+  })
+
   async function resume(old: FakeSocket, owned = false) {
     old.onerror?.()
     await vi.advanceTimersByTimeAsync(1)

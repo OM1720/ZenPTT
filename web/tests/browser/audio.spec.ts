@@ -1,5 +1,6 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { createHash } from 'node:crypto'
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import { assertSignal, signal, trimSilence } from '../signal'
@@ -19,7 +20,9 @@ for (let i = 0; i < samples; i++) wav.writeInt16LE(Math.round(32767 * fixture[i]
 writeFileSync(microphoneFile, wav)
 
 const proxyUrls = (process.env.ZENPTT_WEB_PROXY_URLS ?? '').split(',').filter(Boolean)
-test.use({ bypassCSP: proxyUrls.length > 0, launchOptions: { args: [
+const diagnosticRun = Boolean(process.env.ZENPTT_WEB_PROXY_DIAGNOSTICS)
+test.use({ bypassCSP: proxyUrls.length > 0 || diagnosticRun,
+  trace: process.env.ZENPTT_WEB_PROXY_TRACE === '1' ? 'retain-on-failure' : 'off', launchOptions: { args: [
   '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
   `--use-file-for-fake-audio-capture=${microphoneFile}`,
 ] } })
@@ -40,6 +43,8 @@ interface Probe {
   trace: AudioTrace
   pcm: () => Promise<{ input: string; output: string }>
   resetPcm: () => Promise<void>
+  events: Record<string, unknown>[]
+  stopAfterMs: number | null
 }
 interface AudioTrace {
   sent: { atMs: number; sequence: number; count: number }[]
@@ -67,17 +72,47 @@ async function observe(page: Page, proxyUrl?: string) {
       rms: () => 0, microphone: () => null, context: () => '',
       playing: false, trace: emptyTrace(),
       pcm: async () => ({ input: '', output: '' }), resetPcm: async () => {},
+      events: [], stopAfterMs: null,
     }
     window.audioProbe = probe
+    const record = (kind: string, detail: object = {}) => probe.events.push({
+      kind, atMs: performance.now(), timeOrigin: performance.timeOrigin, ...detail,
+    })
+    const clean = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value)
+      .filter(([key]) => !['resume_token', 'packet', 'module'].includes(key)))
+    const media = (data: ArrayBuffer) => {
+      const view = new DataView(data)
+      const hex = Array.from(new Uint8Array(data, 2, 16), byte => byte.toString(16).padStart(2, '0')).join('')
+      return { burstId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+        sequence: view.getUint32(18), count: view.getUint16(22) }
+    }
+    window.addEventListener('error', event => record('window_error', { message: event.message }))
+    window.addEventListener('unhandledrejection', event => record('unhandled_rejection', { message: String(event.reason) }))
+    document.addEventListener('pointerup', () => record('ptt_release'))
+    document.addEventListener('pointerdown', () => record('pointer_down'))
+    document.addEventListener('DOMContentLoaded', () => {
+      let previous = ''
+      new MutationObserver(() => {
+        const state = Array.from(document.querySelectorAll('button,[role="status"],[role="alert"]'), element => element.textContent).join('|')
+        if (state !== previous) { previous = state; record('ui_state', { state }) }
+      }).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true })
+    })
     const Socket = window.WebSocket
+    let transport = 0
     window.WebSocket = class extends Socket {
       private granted = false
+      private generation = ++transport
       constructor(url: string | URL, protocols?: string | string[]) {
         super(proxy ?? url, protocols)
+        record('socket_created', { transport: this.generation })
+        this.addEventListener('open', () => record('socket_open', { transport: this.generation }))
+        this.addEventListener('close', event => record('socket_close', { transport: this.generation, code: event.code, reason: event.reason }))
+        this.addEventListener('error', () => record('socket_error', { transport: this.generation }))
         this.addEventListener('message', event => {
           if (typeof event.data !== 'string') {
             probe.received++
             if (event.data instanceof ArrayBuffer) {
+              record('received', { transport: this.generation, ...media(event.data) })
               const view = new DataView(event.data)
               const count = view.getUint16(22)
               probe.receivedFrames += count
@@ -86,14 +121,17 @@ async function observe(page: Page, proxyUrl?: string) {
             return
           }
           const message = JSON.parse(event.data) as { type: string }
+          record('control_received', { transport: this.generation, ...clean(message) })
           if (message.type === 'ptt_granted') { this.granted = true; probe.grants++ }
           if (message.type === 'ptt_ended') this.granted = false
         })
       }
       send(data: Parameters<WebSocket['send']>[0]) {
+        if (typeof data === 'string') record('control_sent', { transport: this.generation, ...clean(JSON.parse(data)) })
         if (typeof data !== 'string') {
           probe.sent++
           if (data instanceof ArrayBuffer) {
+            record('sent', { transport: this.generation, ...media(data) })
             const view = new DataView(data)
             const count = view.getUint16(22)
             probe.sentFrames += count
@@ -107,8 +145,26 @@ async function observe(page: Page, proxyUrl?: string) {
     const Context = window.AudioContext
     let merger: ChannelMergerNode
     window.AudioContext = class extends Context {
+      constructor(options?: AudioContextOptions) {
+        super(options)
+        this.addEventListener('statechange', () => record('context_state', { state: this.state, audioMs: this.currentTime * 1000 }))
+        if (proxy) {
+          const addModule = this.audioWorklet.addModule.bind(this.audioWorklet)
+          this.audioWorklet.addModule = async (url, options) => {
+            const response = await fetch(url)
+            if (!response.ok) throw new Error('Diagnostic worklet fetch failed')
+            const bytes = await response.arrayBuffer()
+            const hash = await crypto.subtle.digest('SHA-256', bytes)
+            record('worklet_source', { path: new URL(String(url), location.href).pathname.slice(5),
+              sha256: Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('') })
+            const source = URL.createObjectURL(new Blob([bytes], { type: 'text/javascript' }))
+            try { await addModule(source, options) } finally { URL.revokeObjectURL(source) }
+          }
+        }
+      }
       createMediaStreamSource(stream: MediaStream) {
         const track = stream.getAudioTracks()[0]!
+        for (const kind of ['ended', 'mute', 'unmute']) track.addEventListener(kind, () => record('track_state', { event: kind, state: track.readyState, enabled: track.enabled }))
         probe.microphone = () => ({ enabled: track.enabled, state: track.readyState })
         probe.context = () => this.state
         const source = super.createMediaStreamSource(stream)
@@ -117,9 +173,22 @@ async function observe(page: Page, proxyUrl?: string) {
       }
     }
     const Worklet = window.AudioWorkletNode
+    let workletGeneration = 0
     window.AudioWorkletNode = class extends Worklet {
       constructor(...args: ConstructorParameters<typeof AudioWorkletNode>) {
         super(...args)
+        const audioGeneration = ++workletGeneration
+        let stopTimer: ReturnType<typeof setTimeout> | undefined
+        let stopRequest: string | null = null
+        const cancelStop = () => { clearTimeout(stopTimer); stopRequest = null }
+        args[0].addEventListener('statechange', () => { if (args[0].state === 'closed') cancelStop() })
+        const originalPost = this.port.postMessage.bind(this.port)
+        Object.defineProperty(this.port, 'postMessage', { configurable: true, value: (message: Record<string, unknown>) => {
+          record('command', { ...clean(message), audioGeneration, audioMs: args[0].currentTime * 1000,
+            microphone: probe.microphone() })
+          originalPost(message)
+        } })
+        this.addEventListener('processorerror', () => record('processor_error'))
         if (prebufferMs > 0) {
           const port = this.port, send = port.postMessage.bind(port)
           const held: { type?: string }[] = []
@@ -150,7 +219,7 @@ async function observe(page: Page, proxyUrl?: string) {
           let input: number[] = [], output: number[] = []
           let lastWallMs: number | null = null, lastAudioMs: number | null = null
           observer.onaudioprocess = event => {
-            if (input.length >= args[0].sampleRate * 20) throw new Error('PCM observer budget exceeded')
+            if (input.length >= args[0].sampleRate * 180) { record('pcm_budget_exceeded'); return }
             const wallMs = performance.now(), audioMs = event.playbackTime * 1000
             const observed = probe.trace.observer
             observed.callbacks++
@@ -187,6 +256,24 @@ async function observe(page: Page, proxyUrl?: string) {
           return Math.sqrt(pcm.reduce((sum, sample) => sum + sample * sample, 0) / pcm.length)
         }
         this.port.addEventListener('message', event => {
+          record('reply', { ...clean(event.data), audioGeneration, audioNowMs: args[0].currentTime * 1000 })
+          if (['stopped', 'capture_expired'].includes(event.data.type) && event.data.requestId === stopRequest) cancelStop()
+          if (event.data.type === 'capture_started' && probe.stopAfterMs !== null && args[0].state === 'running') {
+            cancelStop()
+            stopRequest = event.data.requestId
+            const stopAfterMs = probe.stopAfterMs
+            const deadline = event.data.renderFrame / args[0].sampleRate * 1000 + stopAfterMs
+            record('stop_scheduled', { requestId: event.data.requestId, deadlineAudioMs: deadline, plannedMs: stopAfterMs })
+            const release = () => {
+              if (stopRequest !== event.data.requestId || args[0].state !== 'running') return
+              const remaining = deadline - args[0].currentTime * 1000
+              if (remaining > 0) { stopTimer = setTimeout(release, Math.ceil(remaining)); return }
+              stopRequest = null
+              record('stop_timer', { requestId: event.data.requestId, audioMs: args[0].currentTime * 1000 })
+              window.dispatchEvent(new Event('blur'))
+            }
+            stopTimer = setTimeout(release, Math.max(0, deadline - args[0].currentTime * 1000))
+          }
           const reply = event.data as { type: string; active: boolean; frame?: boolean;
             cursor?: { nextSequence: number }; blocked?: boolean; lostFrames?: number }
           if (reply.type === 'played' && reply.frame) {
@@ -229,6 +316,114 @@ function unpack(packed: string) {
   const bytes = Buffer.from(packed, 'base64')
   return Array.from({ length: bytes.length / 4 }, (_, i) => bytes.readFloatLE(i * 4))
 }
+
+async function saveEvents(pages: Page[], directory: string) {
+  for (const [index, page] of pages.entries()) {
+    try {
+      const state = await page.evaluate(() => JSON.stringify({ events: window.audioProbe?.events,
+        microphone: window.audioProbe?.microphone(), context: window.audioProbe?.context(),
+        ui: document.body.innerText, timeOrigin: performance.timeOrigin, atMs: performance.now() }))
+      writeFileSync(resolve(directory, `page-${index}.json`), state)
+    } catch (error) {
+      writeFileSync(resolve(directory, `page-${index}-save-error.txt`), String(error))
+    }
+  }
+}
+
+let checkpoint: ReturnType<typeof setInterval> | undefined
+let pendingCheckpoint: Promise<void> | undefined
+let assets: { path: string; sha256: string }[] = []
+let assetReads: Promise<void>[] = []
+test.beforeEach(async ({ context }, info) => {
+  const directory = process.env.ZENPTT_WEB_PROXY_DIAGNOSTICS ?? info.outputPath('audio-diagnostics')
+  mkdirSync(directory, { recursive: true })
+  assets = []; assetReads = []
+  context.on('page', page => {
+    page.on('console', message => {
+      if (message.type() === 'error' || message.type() === 'warning') appendFileSync(resolve(directory, 'browser-console.jsonl'),
+        JSON.stringify({ at: new Date().toISOString(), page: context.pages().indexOf(page), type: message.type(), message: message.text() }) + '\n')
+    })
+  })
+  context.on('response', response => {
+    const path = new URL(response.url()).pathname
+    if (!path.startsWith('/web/') || !response.ok()) return
+    assetReads.push(response.body().then(bytes => {
+      assets.push({ path: path.slice(5) || 'index.html', sha256: createHash('sha256').update(bytes).digest('hex') })
+    }).catch(() => {}))
+  })
+  pendingCheckpoint = undefined
+  checkpoint = setInterval(() => {
+    if (pendingCheckpoint) return
+    pendingCheckpoint = saveEvents(context.pages(), directory).finally(() => { pendingCheckpoint = undefined })
+  }, 10000)
+})
+
+test.afterEach(async ({ context, browser }, info) => {
+  clearInterval(checkpoint)
+  const directory = process.env.ZENPTT_WEB_PROXY_DIAGNOSTICS ?? info.outputPath('audio-diagnostics')
+  await pendingCheckpoint
+  await Promise.all(assetReads)
+  writeFileSync(resolve(directory, 'loaded-assets.json'), JSON.stringify({ browser: browser.version(), assets }, null, 2))
+  await saveEvents(context.pages(), directory)
+  writeFileSync(resolve(directory, 'test-outcome.json'), JSON.stringify({ status: info.status,
+    errors: info.errors, signalSha256: createHash('sha256').update(wav).digest('hex') }, null, 2))
+  if (info.status !== 'passed') {
+    for (const [index, page] of context.pages().entries()) {
+      await page.screenshot({ path: resolve(directory, `page-${index}.png`), timeout: 3000 }).catch(() => {})
+    }
+  }
+})
+
+test('three timed bursts in both directions through the real audio path', async ({ context }) => {
+  test.skip(process.env.ZENPTT_WEB_PROXY_SERIES !== '1', 'Manual long-series measurement')
+  test.setTimeout(360000)
+  const directory = process.env.ZENPTT_WEB_PROXY_DIAGNOSTICS!
+  const first = await context.newPage(), second = await context.newPage()
+  const room = `BUFFER.${crypto.randomUUID().replaceAll('-', '').toUpperCase()}`
+  const directions: object[] = []
+  await join(first, room, proxyUrls[0])
+  await join(second, room, proxyUrls[1])
+  for (const [sender, receiver] of [[first, second], [second, first]] as const) {
+    const direction = sender === first ? 'A-to-B' : 'B-to-A'
+    let error: string | null = null
+    const endedBefore = await receiver.evaluate(() => window.audioProbe.ended)
+    await sender.evaluate(() => { window.audioProbe.stopAfterMs = 20000 })
+    await sender.evaluate(() => window.audioProbe.resetPcm())
+    await receiver.evaluate(() => window.audioProbe.resetPcm())
+    try {
+      for (let burst = 0; burst < 3; burst++) {
+        if (burst) await sender.evaluate(async () => {
+          const terminal = window.audioProbe.events.findLast(event => event.kind === 'control_received' && event.type === 'ptt_ended')
+          const remaining = 2000 - (performance.now() - Number(terminal?.atMs ?? performance.now()))
+          if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining))
+        })
+        await press(sender)
+        await expect(sender.getByRole('button', { name: 'Push to talk' })).toHaveText('Push to talk', { timeout: 35000 })
+        await sender.mouse.up()
+      }
+      await expect.poll(() => receiver.evaluate(() => window.audioProbe.ended), { timeout: 30000 }).toBe(endedBefore + 3)
+    } catch (failure) {
+      error = String(failure)
+      await sender.mouse.up().catch(() => {})
+    } finally {
+      await saveEvents([first, second], directory)
+      directions.push({ direction, error, plannedBursts: 3, plannedFramesPerBurst: 1000 })
+      writeFileSync(resolve(directory, 'series.json'), JSON.stringify(directions, null, 2))
+      if (process.env.ZENPTT_WEB_PROXY_LIGHTWEIGHT !== '1') {
+        const source = await sender.evaluate(() => window.audioProbe.pcm())
+        const received = await receiver.evaluate(() => window.audioProbe.pcm())
+        writeFileSync(resolve(directory, `${direction}-input.f32le`), Buffer.from(source.input, 'base64'))
+        writeFileSync(resolve(directory, `${direction}-output.f32le`), Buffer.from(received.output, 'base64'))
+      }
+    }
+  }
+  for (const page of [first, second]) {
+    const disconnect = page.getByRole('button', { name: 'Disconnect', exact: true })
+    if (await disconnect.isVisible()) await disconnect.click()
+    await expect.poll(() => page.evaluate(() => window.audioProbe.microphone()?.state)).toBe('ended')
+    await expect.poll(() => page.evaluate(() => window.audioProbe.context())).toBe('closed')
+  }
+})
 
 function internalSilence(samples: Float32Array, rate: number) {
   const runs: { startMs: number; durationMs: number }[] = []
@@ -334,4 +529,43 @@ test('ECHO bot decodes browser Opus and returns audible PCM through the worklet'
     assertSignal(trimSilence(unpack(pcm.input)), trimSilence(unpack(pcm.output)), rate, 80)
   }
   await page.getByRole('button', { name: 'Disconnect' }).click()
+})
+
+test('a blocked main thread leaves stop acknowledgement or explicit resource cleanup evidence', async ({ page }) => {
+  await join(page, 'ECHO', proxyUrls[0])
+  await press(page)
+  await expect.poll(() => page.evaluate(() => window.audioProbe.sentFrames)).toBeGreaterThan(5)
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('blur'))
+    const started = performance.now()
+    while (performance.now() - started < 1400) { /* Deliberately block observer delivery. */ }
+    window.audioProbe.events.push({ kind: 'main_thread_block', atMs: performance.now(), durationMs: performance.now() - started })
+  })
+  await page.mouse.up()
+  await expect.poll(() => page.evaluate(() => window.audioProbe.context() === 'closed'
+    || window.audioProbe.events.some(event => event.kind === 'reply' && event.type === 'stopped'))).toBe(true)
+  const disconnect = page.getByRole('button', { name: 'Disconnect', exact: true })
+  if (await disconnect.isVisible()) await disconnect.click()
+  await expect.poll(() => page.evaluate(() => window.audioProbe.microphone()?.state)).toBe('ended')
+  await expect.poll(() => page.evaluate(() => window.audioProbe.context())).toBe('closed')
+})
+
+test('an early release cannot let an old measurement timer stop the next capture', async ({ page }) => {
+  await join(page, `TIMER.${crypto.randomUUID().replaceAll('-', '').toUpperCase()}`)
+  await page.evaluate(() => { window.audioProbe.stopAfterMs = 1000 })
+  await press(page)
+  await expect.poll(() => page.evaluate(() => window.audioProbe.events.filter(event => event.type === 'capture_started').length)).toBe(1)
+  await page.waitForTimeout(100)
+  await page.mouse.up()
+  await expect(page.getByRole('button', { name: 'Push to talk' })).toHaveText('Push to talk')
+  await press(page)
+  await expect(page.getByRole('button', { name: 'Push to talk' })).toHaveText('Push to talk')
+  await page.mouse.up()
+  const duration = await page.evaluate(() => {
+    const start = window.audioProbe.events.filter(event => event.type === 'capture_started').at(-1)!
+    const stop = window.audioProbe.events.find(event => event.kind === 'reply' && event.type === 'stopped' && event.requestId === start.requestId)!
+    return (Number(stop.renderFrame) - Number(start.renderFrame)) / 48
+  })
+  expect(duration).toBeGreaterThanOrEqual(1000)
+  await page.getByRole('button', { name: 'Disconnect', exact: true }).click()
 })

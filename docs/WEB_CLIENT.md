@@ -138,8 +138,9 @@ hardware input sample rate.
 The worklet low-pass filters and resamples capture from the context's 48 kHz to
 16 kHz. libopus encodes 320-sample, mono, 20 ms frames at 16 kbit/s constrained VBR,
 with DTX disabled and the voice signal setting matching Android. Receive decoding
-produces 960 samples at 48 kHz. A new burst has a 100 ms initial playout delay;
+produces 960 samples at 48 kHz. A new burst has a 150 ms initial playout delay;
 playback is paced by the audio render clock, including short sealed bursts.
+A temporary underrun within the same burst does not repeat the initial delay.
 Authoritative gaps use at most three PLC frames, followed by silence and a decoder
 reset. A server history reset discards the superseded queue. Frames from later
 bursts do not overtake queued audio. The receive frame bound follows the v4 policy;

@@ -137,3 +137,20 @@ it('stops a microphone change that completes after disconnect without restoring 
   await join()
   expect(client.getState().audio).toBe('ready')
 })
+
+it('release during the grant cue cancels capture and still requests a stop acknowledgement', async () => {
+  const socket = await join()
+  client.pttDown()
+  const request = socket.sent.filter((value): value is string => typeof value === 'string')
+    .map(value => JSON.parse(value) as { type: string; request_id: string }).find(value => value.type === 'ptt_request')!
+  socket.receive({ type: 'ptt_granted', request_id: request.request_id,
+    burst_id: '00000000-0000-0000-0000-000000000003', burst_index: 0, lease_remaining_ms: 5000 })
+  client.pttUp()
+  const worklet = worklets[0]!
+  expect(worklet.port.postMessage).toHaveBeenCalledWith({ type: 'stop', requestId: request.request_id })
+  worklet.reply({ type: 'stopped', requestId: request.request_id })
+  await vi.advanceTimersByTimeAsync(101)
+  expect(worklet.port.postMessage.mock.calls.some(([message]) => message.type === 'capture')).toBe(false)
+  expect(streams[0]!.track.enabled).toBe(false)
+  expect(client.getState().status).toBe('connected')
+})

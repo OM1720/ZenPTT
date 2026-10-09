@@ -80,8 +80,9 @@ Let `H` be that value. Both implementations derive the same policy:
 | Android receive FIFO frames | `max(60000, server history) / 20` |
 
 Fixed v4 properties are 20 ms Opus frames, mono 16 kbit/s constrained VBR,
-100 ms initial playout, and a 60-second maximum burst. Floor leases, PTT
-request timeouts, the ten-second ping watchdog, reconnect backoff, AudioTrack
+and a 60-second maximum burst. Initial playout is a local client choice:
+100 ms on Android and 150 ms in the browser. Floor leases, PTT request timeouts,
+the ten-second ping watchdog, reconnect backoff, initial playout, AudioTrack
 write-ahead, transport queues, and the burst duration limit do not derive from
 `H`.
 
