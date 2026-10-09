@@ -170,7 +170,7 @@ def markdown(data: dict) -> str:
     lines = ["# Browser playback stall diagnosis", "",
              f"Installed server package SHA-256: `{data['bundle_sha256']}`.", "",
              "Each group contains three seeds and both speech directions. The test-only extra prebuffer "
-             "holds first frame commands before the unchanged 100 ms AudioWorklet start delay.", "",
+             "holds first frame commands before the AudioWorklet's own startup delay.", "",
              "| Link | Extra prebuffer | Frames | Internal silence | Queue blocks / duration | "
              "Median first frame delay | Median receive-to-play | Signal oracle errors |",
              "|---|---:|---:|---:|---:|---:|---:|---:|"]

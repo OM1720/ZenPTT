@@ -9,12 +9,14 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import time
 from urllib.parse import urlsplit
 from zipfile import ZipFile
 
 from prepare_audio import sha256
+from clock_offset import estimate as clock_offset
 from run import IMAGE as TC_IMAGE, ROOT, build, docker, installed_bundle, ssh_logs, url_health
 
 
@@ -77,7 +79,16 @@ def successful(result: dict) -> bool:
             and result.get("browser_direction_count") == 2
             and result.get("health_after", {}).get("status") == "ok"
             and result.get("server_logs", {}).get("exit_code") == 0
+            and not result.get("collection_errors")
+            and result.get("cleanup_status", "complete") == "complete"
+            and not result.get("cleanup_errors")
             and "system_error" not in result)
+
+
+def save_result(output: Path, result: dict) -> None:
+    temporary = output / "result.json.tmp"
+    temporary.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(output / "result.json")
 
 
 def verify_web_dist(package_zip: Path) -> int:
@@ -91,6 +102,43 @@ def verify_web_dist(package_zip: Path) -> int:
         if names != local or any((ROOT / name).read_bytes() != package.read(name) for name in names):
             raise RuntimeError("Local web/dist differs from the selected package")
         return len(names)
+
+
+def verify_web_manifest(manifest_path: Path) -> dict:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    local = {path.relative_to(ROOT / "web/dist").as_posix(): sha256(path)
+             for path in (ROOT / "web/dist").rglob("*") if path.is_file()}
+    if not local or local != manifest["dist"]:
+        raise RuntimeError("Local web/dist differs from the experimental web manifest")
+    return manifest
+
+
+def method_hashes() -> dict:
+    names = ("web/src/ZenPttClient.ts", "web/src/recovery.ts", "web/src/audio/processor.ts",
+             "web/src/audio/messages.ts", "web/tests/browser/audio.spec.ts", "web/tests/signal.ts",
+             "scripts/poor-link/client_proxy.py", "scripts/poor-link/analyze_browser_buffer.py",
+             "scripts/poor-link/browser_buffer.py")
+    return {name: sha256(ROOT / name) for name in names}
+
+
+def browser_process(command: list[str], environment: dict, output: Path) -> dict:
+    """Bound the complete browser process tree and retain streaming output on interruption."""
+    with (output / "browser.stdout.log").open("w", encoding="utf-8") as stdout, \
+            (output / "browser.stderr.log").open("w", encoding="utf-8") as stderr:
+        process = subprocess.Popen(command, cwd=ROOT / "web", env=environment, stdout=stdout,
+                                   stderr=stderr, start_new_session=os.name != "nt")
+        try:
+            return {"test_exit_code": process.wait(timeout=420)}
+        except subprocess.TimeoutExpired:
+            return {"test_error": "browser_timeout"}
+        finally:
+            if process.poll() is None:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                   capture_output=True, timeout=15, check=False)
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=15)
 
 
 def run_case(args: argparse.Namespace) -> Path:
@@ -114,12 +162,14 @@ def run_case(args: argparse.Namespace) -> Path:
                     "audio_diagnostics": args.diagnose_audio,
                     "prebuffer_ms": args.prebuffer_ms,
                     "lightweight_observer": args.lightweight_observer,
+                    "series": args.series,
+                    "playwright_trace": args.trace_browser,
+                    "retry_of": args.retry_of,
                     "ports": ports, "started_at": datetime.now(timezone.utc).isoformat(),
-                    "source": {str(path.relative_to(ROOT)): sha256(path) for path in (
-                        ROOT / "web/src/ZenPttClient.ts", ROOT / "web/src/recovery.ts",
-                        ROOT / "web/tests/browser/audio.spec.ts", ROOT / "scripts/poor-link/client_proxy.py")}}
+                    "source": method_hashes()}
     created: list[str] = []
     stack_started = False
+    before_stats: dict = {}
     try:
         docker("info", "--format", "{{.ServerVersion}}")
         if docker(*COMPOSE, "ps", "-q").stdout.strip():
@@ -128,11 +178,15 @@ def run_case(args: argparse.Namespace) -> Path:
         result["installed_bundle"] = installed_bundle(config)
         if result["installed_bundle"] != args.expected_bundle:
             raise RuntimeError("Installed test-host package differs from --expected-bundle")
+        result["server_clock"] = clock_offset(server_url, samples=3)
         if args.package_zip:
             package_zip = Path(args.package_zip)
             if sha256(package_zip) != args.expected_bundle:
                 raise RuntimeError("Selected package ZIP differs from --expected-bundle")
-            result["local_web_files_verified"] = verify_web_dist(package_zip)
+            if not args.web_manifest:
+                result["local_web_files_verified"] = verify_web_dist(package_zip)
+        if args.web_manifest:
+            result["web_manifest"] = verify_web_manifest(Path(args.web_manifest))
         if docker("image", "inspect", TC_IMAGE, check=False).returncode:
             build()
         for name, port in zip(names, ports):
@@ -150,8 +204,8 @@ def run_case(args: argparse.Namespace) -> Path:
                 if response.status != 200 or json.load(response).get("status") != "ok":
                     raise RuntimeError(f"Proxy on port {port} did not reach the test host")
         before_stats = {role: tc_stats(name) for name, role in zip(names, ("A", "B"))}
-        docker(*COMPOSE, "up", "-d", "--build", "--force-recreate", timeout=600)
         stack_started = True
+        docker(*COMPOSE, "up", "-d", "--build", "--force-recreate", timeout=600)
         for _ in range(30):
             try:
                 from urllib.request import urlopen
@@ -173,29 +227,36 @@ def run_case(args: argparse.Namespace) -> Path:
             environment["ZENPTT_WEB_PROXY_DIAGNOSTICS"] = str(output)
         if args.lightweight_observer:
             environment["ZENPTT_WEB_PROXY_LIGHTWEIGHT"] = "1"
+        environment["ZENPTT_WEB_PROXY_TRACE"] = "1" if args.trace_browser else "0"
+        if args.series:
+            environment["ZENPTT_WEB_PROXY_SERIES"] = "1"
+            environment["ZENPTT_WEB_PROXY_DIAGNOSTICS"] = str(output)
         npx = shutil.which("npx.cmd" if os.name == "nt" else "npx")
         if npx is None:
             raise FileNotFoundError("npx is not installed")
         command = [npx, "playwright", "test", "--project=audio",
                    "tests/browser/audio.spec.ts", "-g",
-                   "real AudioWorklet/WASM path streams before release in both directions"]
+                   "three timed bursts in both directions" if args.series else
+                   "real AudioWorklet/WASM path streams before release in both directions",
+                   "--output", str(output / "playwright")]
         result["test_started_at"] = datetime.now(timezone.utc).isoformat()
-        try:
-            test = subprocess.run(command, cwd=ROOT / "web", env=environment,
-                                  capture_output=True, text=True, timeout=180, check=False)
-            result["test_exit_code"] = test.returncode
-            (output / "browser.stdout.log").write_text(test.stdout, encoding="utf-8")
-            (output / "browser.stderr.log").write_text(test.stderr, encoding="utf-8")
-        except subprocess.TimeoutExpired as error:
-            result["test_error"] = "browser_timeout"
-            (output / "browser.stdout.log").write_bytes(error.stdout or b"")
-            (output / "browser.stderr.log").write_bytes(error.stderr or b"")
+        result.update(browser_process(command, environment, output))
         result["test_ended_at"] = datetime.now(timezone.utc).isoformat()
         metrics_path = output / "browser-metrics.json"
         if metrics_path.exists():
             browser_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             result["browser_direction_count"] = len(browser_metrics)
             result["signal_degradation"] = any(item["signalError"] for item in browser_metrics)
+        if args.series and (output / "series.json").exists():
+            result["browser_direction_count"] = len(json.loads((output / "series.json").read_text()))
+        if args.web_manifest:
+            loaded = json.loads((output / "loaded-assets.json").read_text())
+            expected = result["web_manifest"]["dist"]
+            result["loaded_assets"] = loaded
+            if not loaded["assets"] or any(expected.get(item["path"]) != item["sha256"] for item in loaded["assets"]):
+                raise RuntimeError("Browser fetched assets that differ from the experimental manifest")
+            if not any(item["path"].startswith("assets/processor-") for item in loaded["assets"]):
+                raise RuntimeError("Missing fetched AudioWorklet provenance")
         for name, role in zip(names, ("A", "B")):
             after_stats = tc_stats(name)
             (output / f"tc-{role}-before.log").write_text(before_stats[role], encoding="utf-8")
@@ -210,12 +271,51 @@ def run_case(args: argparse.Namespace) -> Path:
     except Exception as error:
         result["system_error"] = f"{type(error).__name__}: {error}"
     finally:
-        if stack_started:
-            docker(*COMPOSE, "down", check=False)
-        for name in created:
-            docker("rm", "-f", name, check=False)
+        # Preserve partial evidence even when setup, browser execution, or collection fails.
+        for name, role in zip(names, ("A", "B")):
+            if name not in created:
+                continue
+            try:
+                if role in before_stats:
+                    (output / f"tc-{role}-before.log").write_text(before_stats[role], encoding="utf-8")
+                if not (output / f"tc-{role}.log").exists():
+                    (output / f"tc-{role}.log").write_text(tc_stats(name), encoding="utf-8")
+                if role in before_stats:
+                    result[f"tc_{role}_sent_packet_delta"] = sent_packets(
+                        (output / f"tc-{role}.log").read_text()) - sent_packets(before_stats[role])
+                logs = docker("logs", name, check=False)
+                (output / f"proxy-{role}.log").write_text(logs.stdout + logs.stderr, encoding="utf-8")
+            except Exception as error:
+                result.setdefault("collection_errors", []).append(f"{role}: {type(error).__name__}")
+        if "test_started_at" in result and "server_logs" not in result:
+            try:
+                result["server_logs"] = ssh_logs(config, result["test_started_at"],
+                    datetime.now(timezone.utc).isoformat(), output / "server.log")
+            except Exception as error:
+                result.setdefault("collection_errors", []).append(f"server: {type(error).__name__}")
+        if "health_after" not in result:
+            try:
+                result["health_after"] = url_health(server_url)
+            except Exception as error:
+                result.setdefault("collection_errors", []).append(f"health: {type(error).__name__}")
+        if "tc_confirmed" not in result:
+            result["tc_confirmed"] = bool(created) and (args.profile == "baseline" or
+                result.get(f"tc_{args.impaired}_sent_packet_delta", 0) > 0)
+        result.update(cleanup_status="pending", cleanup_errors=[])
+        save_result(output, result)
+        cleanup = [(*COMPOSE, "down")] if stack_started else []
+        cleanup.extend(("rm", "-f", name) for name in created)
+        for operation in cleanup:
+            try:
+                response = docker(*operation, check=False)
+                if response.returncode:
+                    raise RuntimeError(f"exit {response.returncode}: {response.stderr[:300]}")
+            except Exception as error:
+                result["cleanup_errors"].append(f"{operation}: {type(error).__name__}: {error}")
+            save_result(output, result)
+        result["cleanup_status"] = "failed" if result["cleanup_errors"] else "complete"
         result["finished_at"] = datetime.now(timezone.utc).isoformat()
-        (output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        save_result(output, result)
         metrics = output / "browser-metrics.json"
         lines = ["# Browser client proxy experiment", "",
                  f"Profile: `{args.profile}` on client {args.impaired}.",
@@ -250,6 +350,10 @@ def main() -> None:
     parser.add_argument("--server-url")
     parser.add_argument("--expected-bundle", required=True)
     parser.add_argument("--package-zip")
+    parser.add_argument("--web-manifest", help="Verify experimental web bytes separately from the installed server ZIP")
+    parser.add_argument("--series", action="store_true", help="Three timed 20-second bursts per direction")
+    parser.add_argument("--retry-of", help="Original failed attempt identifier; never overwrite it")
+    parser.add_argument("--trace-browser", action="store_true", help="Opt in to heavy Playwright tracing for observer diagnosis")
     parser.add_argument("--profile", choices=PROFILES, default="baseline")
     parser.add_argument("--impaired", choices=("A", "B"), default="A")
     parser.add_argument("--seed", type=int, choices=(1009, 2017, 3037), default=1009)

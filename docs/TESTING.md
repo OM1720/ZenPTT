@@ -183,6 +183,95 @@ Disappearance, voluntary release, and cancellation can be run separately with
 
 ## Browser audio through isolated network proxies
 
+For the fixed browser buffer study, `scripts/poor-link/browser_buffer.py build
+--output <ignored-study-directory>` snapshots browser sources once and builds
+P100/P150/P200 in the pinned Linux image. Each candidate runs the web checks and
+render-clock startup tests, retains its source, one-constant patch, image ID,
+and exact static-file manifest. Candidates are generated independently of the
+working default, which is now 150 ms. The grant cue's separate 100 ms capture
+delay is unchanged.
+
+After SSH authentication and the installed ZIP are verified, use the same
+study directory and `--expected-bundle <installed-zip-sha256>` with the
+`historical`, `pilot`, and `matrix` actions, in that order. Historical repeats
+run the two original short scenarios ten times each. The pilot runs baseline
+and unstable seed 1009 for all three buffers. The full matrix has 45 lightweight
+runs (five profiles, three seeds, three buffers) and six separate PCM runs.
+Matching saved pilot attempts are retained; changed methods or candidate
+manifests cannot silently replace them. Use a new directory and the proxy
+runner's `--retry-of` for an explicit retry.
+
+The opt-in `--series` proxy scenario plans three 20-second captures per
+direction. A browser timer releases PTT relative to the worklet capture-start
+clock, independently of sent/received counts. Two seconds separate completed
+sends; receiver playback is not a prerequisite for the next send. After the
+third send the receiver has 30 seconds to finish. Browser and process limits
+are 360 and 420 seconds. Application timeouts remain unchanged. The main
+matrix sets `--lightweight-observer`; the six PCM runs use the same method
+with the observer enabled. PCM capture has a separate bounded budget and
+does not determine network frame completeness.
+The scenario also has a 35-second sender-idle guard per press; a timeout ends
+that directional series and preserves its reason before attempting the reverse
+direction. Later end markers must not erase that timeout in offline analysis.
+The timer rechecks the render-clock deadline and is canceled when its capture
+ends, expires, is superseded, or the context closes. Early release must not
+leave a timer that can release the next capture.
+Journal checkpoints cross the automation boundary as packed JSON strings;
+large structured event arrays can themselves delay the main thread. No journal
+copy is awaited between sends. The pause deadline uses the preceding sender
+terminal event, and analysis retains actual inter-send pauses.
+
+Playwright tracing is disabled by default in all browser audio scenarios because
+trace collection can delay main-thread audio callbacks. The normal web gate
+retains lightweight journals under each test's `audio-diagnostics/` output path.
+`scripts/test-web.ps1` preserves separate `browser`, `audio`, and `restart`
+outputs under a unique ignored `acceptance/artifacts/web-gate/<run-id>/`.
+Each stage has stdout/stderr logs; Compose journals and container state are
+collected before cleanup. `result.json` retains the primary failure separately
+from collection and cleanup errors. An occupied test project is rejected before
+building. `-KeepRunning` retains only the stack started by that invocation.
+Collection and cleanup commands have 45-second process budgets; browser stages
+have a 900-second outer budget without changing individual test or app timeouts.
+Run `pwsh -NoProfile -File scripts/test-web-gate.ps1` for isolated launcher
+regressions with fake Docker/npm commands; no live containers are used.
+Historical repeats enable tracing explicitly with `--trace-browser` to reproduce
+the older observation conditions. For a direct Playwright diagnostic run, set
+`ZENPTT_WEB_PROXY_TRACE=1`. Compare that effect separately from ScriptProcessor
+PCM observation.
+
+Per-page journals preserve request/burst IDs, transport and playback
+generations, worklet commands/replies, render clocks, queue depths, context
+and UI changes. Ten-second checkpoints, failure screenshots, streaming process
+logs, and unique Playwright artifact directories retain partial evidence.
+A forced process termination may lose events since its last checkpoint.
+The proxy runner atomically saves `result.json` before container cleanup with
+`cleanup_status: pending`, then updates it to `complete` or `failed` and records
+`cleanup_errors`. All owned cleanup operations are attempted independently.
+Pending/failed cleanup makes a new attempt unsuccessful; older evidence without
+these additive fields retains its original interpretation. Experimental
+`web/dist` switching validates candidate paths before replacement and retries
+only confirmed Windows ReadOnly deletion failures. Restoration verifies the
+complete file-hash set and writes a separate `*-restoration.json` record,
+including both the original and restoration errors when applicable.
+Worklet metadata is local to the browser and does not change the wire protocol.
+`--web-manifest` verifies experimental static files separately from the server
+ZIP and checks the assets actually fetched by Chrome. The diagnostic loader
+uses exact fetched worklet bytes: it hashes the module,
+loads those bytes through a temporary Blob URL, and revokes the URL afterward.
+Analyze a saved attempt
+with `python scripts/poor-link/analyze_browser_buffer.py <attempt-directory>`.
+The analyzer preserves planned/created/delivered counts, padding, excess,
+terminal evidence and playback generations. Render-clock gaps between frames
+of one burst measure internal queue stalls. Cross-context delay estimates use
+same-host performance origins and record clock-offset variation; these are not
+mouth-to-ear or acoustic measurements.
+`summarize_browser_buffer.py <study-directory>` produces the complete case list,
+separate observer groups and matched differences. `analyze_browser_pcm.py
+<attempt-directory>` performs supplementary sparse spectral confirmation;
+it does not infer frame loss from PCM duration. See the
+[October browser-buffer investigation](research/browser-buffer-2026-10-09.md)
+for the completed comparison and its limitations.
+
 The browser proxy experiment runs the real AudioWorklet and Opus path in two
 Chromium clients. Each client connects through its own temporary Linux Caddy
 container. Traffic control is confined to a proxy container; this changes the
@@ -215,6 +304,8 @@ For browser playback-stall diagnosis, use the same package with
 prebuffer is a test-only delay before the first frame commands reach the
 unchanged AudioWorklet; it is not a server or client setting. Each result saves
 frame timing, queue-block events, raw float32 PCM, and observer callback gaps.
+The 7 October study used a 100 ms worklet delay; current builds use 150 ms.
+Keep the actual worklet build identical when comparing extra prebuffer values.
 Use `--lightweight-observer` with `--prebuffer-ms 0` to repeat baseline and
 unstable without the ScriptProcessorNode PCM tap. This mode retains worklet
 queue events but does not save PCM. Analyze the complete matrix with:
